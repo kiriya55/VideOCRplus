@@ -1,8 +1,8 @@
 #!/bin/bash
 
-DESKTOP_FILE="$HOME/.local/share/applications/VideOCR.desktop"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/VideOCR"
-LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/VideOCR"
+DESKTOP_FILE="$HOME/.local/share/applications/VideOCRplus.desktop"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/VideOCRplus"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/VideOCRplus"
 
 if [ -f "$DESKTOP_FILE" ]; then
     echo "Removing desktop shortcut..."
@@ -15,7 +15,7 @@ fi
 
 # Check if either the config or log directory exists, and ask the user
 if [ -d "$CONFIG_DIR" ] || [ -d "$LOG_DIR" ]; then
-    read -p "Do you also want to delete your VideOCR settings and log files? (y/N) " -n 1 -r
+    read -p "Do you also want to delete your VideOCRplus settings and log files? (y/N) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         rm -rf "$CONFIG_DIR"
@@ -28,4 +28,4 @@ if [ -d "$CONFIG_DIR" ] || [ -d "$LOG_DIR" ]; then
 fi
 
 echo "--------------------------------------------------------"
-echo "You can now safely delete the VideOCR folder from your system if no longer needed."
+echo "You can now safely delete the VideOCRplus folder from your system if no longer needed."

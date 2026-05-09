@@ -1,6 +1,5 @@
 {
     "tab_video": "ビデオ処理",
-    "tab_batch": "キュー",
     "tab_advanced": "詳細設定",
     "tab_about": "について",
 
@@ -9,7 +8,7 @@
     "lbl_ocr_engine": "OCRエンジン:",
     "tip_ocr_engine": "テキスト検出と認識に使用するOCRエンジンを選択します。",
     "engine_info": "OCRエンジン情報",
-    "engine_message": "PaddleOCR (検出 + 認識):\n• 100% ローカル処理。\n• テキスト検出と認識の両方がローカルで行われます。\n\nPaddleOCR (検出) + Google Lens (認識):\n• ハイブリッド処理。\n• PaddleOCRがローカルでテキスト検出を処理します。\n• Google Lens (オンライン)がテキスト認識を処理します。\n• アクティブなインターネット接続が必要です。",
+    "engine_message": "PaddleOCR (検出 + 認識):\n• 100% ローカル処理。\n• テキスト検出と認識の両方がローカルで行われます。\n• オフライン使用に最適。\n\nPaddleOCR (検出) + Google Lens (認識):\n• ハイブリッド処理。\n• PaddleOCRがローカルでテキスト検出を処理します。\n• Google Lens (オンライン)がテキスト認識を処理します。\n• アクティブなインターネット接続が必要です。\n\nPaddleOCR (検出) + LLM Vision (認識):\n• ハイブリッド処理。\n• PaddleOCRがローカルでテキスト検出を処理します。\n• Vision LLMがテキスト認識を処理します。\n• SSIM重複排除によりLLM処理前にフレーム数を削減。\n• 各SSIMバッチは代表フレームとしてグリッドで送信。\n• APIキーとインターネット接続が必要です。\n• 設定タブでAPI設定を構成。\n• OpenAI、Anthropic、互換APIをサポート。",
     "lbl_sub_lang": "字幕言語:",
     "lbl_sub_pos": "字幕位置:",
     "pos_center": "中央",
@@ -113,28 +112,8 @@
     "btn_check_now": "今すぐチェック",
     "btn_ok": "OK",
     "btn_dismiss": "閉じる",
-    "btn_add_to_queue": "キューに追加",
-    "btn_add_all_to_queue": "すべてキューに追加",
     "btn_pause": "一時停止",
     "btn_resume": "再開",
-
-    "lbl_queue_title": "キュー",
-    "col_video_file": "ビデオファイル",
-    "col_output_file": "出力ファイル",
-    "col_status": "ステータス",
-    "btn_start_queue": "キューを開始",
-    "btn_stop_queue": "キューを停止",
-    "btn_reset": "リセット",
-    "btn_edit": "編集",
-    "btn_remove": "削除",
-    "btn_clear_queue": "キューをクリア",
-
-    "tip_batch_up": "選択したジョブを上に移動",
-    "tip_batch_down": "選択したジョブを下に移動",
-    "tip_batch_reset": "キャンセルされたジョブをリセット",
-    "tip_batch_edit": "編集のためにメインウィンドウに戻す",
-    "tip_batch_remove": "選択したジョブをキューから削除",
-    "tip_batch_clear": "現在のキューをクリア",
 
     "lbl_about_version": "バージョン: {version}",
     "lbl_get_newest": "最新バージョンはこちらから入手:",
@@ -163,11 +142,7 @@
     "status_resuming": "\nプロセスを再開しています...\n",
     "status_pausing": "\nプロセスを一時停止しています...\n",
     "notification_title": "字幕生成が完了しました！",
-    "batch_processing_file": "処理中",
-    "batch_finished_count": "バッチ完了: {} ファイルを処理しました。",
-    "status_queue_cancelled": "キューがキャンセルされました",
-    "status_queue_finished": "キューが完了しました",
-    
+
     "lbl_step": "ステップ",
     "progress_step1_action": "ビデオを処理しています...",
     "progress_step2_action": "画像 {current} / {total} でテキスト検出を実行しています ({percent}%)",
@@ -217,22 +192,6 @@
     "err_crop_w_out": "{} が範囲外です (X+W > 幅)。",
     "err_crop_h_out": "{} が範囲外です (Y+H > 高さ)。",
 
-    "title_duplicate": "重複",
-    "msg_duplicate_queue": "'{}' のジョブは既にキューにあります。\n\n出力パスを変更するか、キューからジョブを削除してください。",
-    "msg_duplicate_queue_running": "'{}' のジョブは現在アクティブです (ステータス: {})。\n\n出力パスを変更するか、完了するまでお待ちください。",
-    "title_duplicate_job": "ジョブの重複",
-    "popup_duplicate_msg": "この出力ファイルのジョブは既に存在します (ステータス: {})。\n\n現在の設定で更新/再開しますか？",
-    "popup_cannot_edit_running": "現在 {} のジョブは編集できません。\n先にプロセスを停止またはキャンセルしてください。",
-    "popup_cannot_remove_running": "実行中または一時停止中のジョブは削除できません。\n先にプロセスを停止またはキャンセルしてください。",
-
-    "title_progress": "進行状況",
-    "msg_scanning_init": "スキャンを初期化中...",
-    "msg_scanning_progress": "ファイル {} / {} をスキャン中...",
-    "reason_dup_path": "出力パスの重複",
-    "reason_metadata": "メタデータエラー",
-    "title_batch_report": "バッチレポート",
-    "msg_batch_report_summary": "{} 個のビデオを追加しました。\n\n{} 個のビデオをスキップしました:\n",
-    "msg_and_others": "...他",
 
     "lbl_when_ready": "完了時:",
     "action_none": "何もしない",
@@ -241,7 +200,7 @@
     "action_shutdown": "シャットダウン",
     "action_lock": "ロック",
     "log_post_action": "完了後のアクションを実行中: {}",
-    "tip_post_action": "バッチキューの完了時に実行するアクションを選択してください。",
+    "tip_post_action": "処理完了時に実行するアクションを選択してください。",
     "title_countdown": "アクションが必要です",
     "lbl_action_countdown": "システムは {} 秒後に '{}' を実行します。",
     "btn_proceed": "今すぐ続行",
@@ -250,7 +209,7 @@
     "status_pending": "保留中",
     "status_processing": "処理中",
     "status_completed": "完了",
-    "status_cancelled_queue": "キャンセル済み",
+    "status_cancelled": "キャンセル済み",
     "status_error": "エラー",
     "status_paused": "一時停止"
 }

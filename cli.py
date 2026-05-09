@@ -8,7 +8,7 @@
 
 # Windows-specific metadata for the executable
 # nuitka-project-if: {OS} == "Windows":
-#     nuitka-project-set: APP_VERSION = (__import__("sys").path.insert(0, "..") or __import__("_version").__version__)
+#     nuitka-project-set: APP_VERSION = __import__("_version").__version__
 #     nuitka-project: --file-description="VideOCR CLI"
 #     nuitka-project: --file-version={APP_VERSION}
 #     nuitka-project: --product-name="VideOCR-CLI"
@@ -26,7 +26,7 @@ from typing import Callable
 from wakepy import keep
 
 from videocr import save_subtitles_to_file, utils
-from videocr.lang_dictionaries import GOOGLE_LENS_LANGS, PADDLEOCR_LANGS
+from videocr.lang_dictionaries import GOOGLE_LENS_LANGS, LLM_VISION_LANGS, PADDLEOCR_LANGS
 
 
 # custom validators for argparse
@@ -99,7 +99,7 @@ def main() -> None:
 
     parser.add_argument('--video_path', type=valid_video_path, required=True, help='Path to the video file')
     parser.add_argument('--output', type=valid_output_path, default='subtitle.srt', help='Output SRT file path (default: subtitle.srt)')
-    parser.add_argument('--ocr_engine', type=str, choices=['paddleocr', 'google_lens'], default='paddleocr', help='OCR engine to use in the recognition step (default: paddleocr)')
+    parser.add_argument('--ocr_engine', type=str, choices=['paddleocr', 'google_lens', 'llm_vision'], default='paddleocr', help='OCR engine to use in the recognition step (default: paddleocr)')
     parser.add_argument('--lang', type=str, default='en', help='OCR language code (default: en)')
     parser.add_argument('--time_start', type=valid_time_string, default='0:00', help='Start time (MM:SS or HH:MM:SS)')
     parser.add_argument('--time_end', type=valid_time_string, default='', help='End time (MM:SS or HH:MM:SS)')
@@ -118,6 +118,13 @@ def main() -> None:
     parser.add_argument('--post_processing', type=lambda x: x.lower() == 'true', default=False, help='Enable post processing of subtitles (default: false)')
     parser.add_argument('--min_subtitle_duration', type=restricted_float(min_val=0.0), default=0.2, help='Minimum subtitle duration in seconds (default: 0.2)')
     parser.add_argument('--ocr_image_max_width', type=restricted_int(min_val=1), default=720, help='Maximum image width used for OCR (default: 720)')
+    parser.add_argument('--llm_api_key', type=str, default='', help='API key for LLM Vision engine (or set LLM_API_KEY env var)')
+    parser.add_argument('--llm_api_base', type=str, default='', help='API base URL for LLM Vision engine (or set LLM_API_BASE env var)')
+    parser.add_argument('--llm_model', type=str, default='', help='Model name for LLM Vision engine (or set LLM_MODEL env var)')
+    parser.add_argument('--llm_concurrency', type=restricted_int(min_val=1, max_val=32), default=4, help='Number of concurrent LLM API requests (default: 4)')
+    parser.add_argument('--llm_disable_inference', type=lambda x: x.lower() == 'true', default=False, help='Disable reasoning/thinking mode for LLM (default: false)')
+    parser.add_argument('--llm_max_frames_per_grid', type=restricted_int(min_val=0, max_val=200), default=0, help='Max frames per LLM grid image (0=auto, default: 0)')
+    parser.add_argument('--llm_image_quality', type=restricted_int(min_val=50, max_val=100), default=75, help='JPEG quality for LLM images, 50-100 (default: 75)')
     parser.add_argument('--crop_x', type=int, default=None, help='(Zone 1) Crop start X')
     parser.add_argument('--crop_y', type=int, default=None, help='(Zone 1) Crop start Y')
     parser.add_argument('--crop_width', type=int, default=None, help='(Zone 1) Crop width')
@@ -137,6 +144,21 @@ def main() -> None:
             raise ValueError(f"Unsupported language code '{args.lang}' for PaddleOCR.")
         if args.ocr_engine == 'google_lens' and args.lang not in GOOGLE_LENS_LANGS:
             raise ValueError(f"Unsupported language code '{args.lang}' for Google Lens.")
+        if args.ocr_engine == 'llm_vision' and args.lang not in LLM_VISION_LANGS:
+            raise ValueError(f"Unsupported language code '{args.lang}' for LLM Vision.")
+
+        # Resolve LLM parameters from args or environment variables
+        llm_api_key = args.llm_api_key or os.environ.get('LLM_API_KEY', '')
+        llm_api_base = args.llm_api_base or os.environ.get('LLM_API_BASE', '')
+        llm_model = args.llm_model or os.environ.get('LLM_MODEL', '')
+
+        if args.ocr_engine == 'llm_vision':
+            if not llm_api_key:
+                raise ValueError("LLM Vision engine requires an API key. Use --llm_api_key or set LLM_API_KEY env var.")
+            if not llm_api_base:
+                raise ValueError("LLM Vision engine requires an API base URL. Use --llm_api_base or set LLM_API_BASE env var.")
+            if not llm_model:
+                raise ValueError("LLM Vision engine requires a model name. Use --llm_model or set LLM_MODEL env var.")
 
         if args.time_start and args.time_end:
             start_ms = utils.get_ms_from_time_str(args.time_start)
@@ -198,7 +220,14 @@ def main() -> None:
                 post_processing=args.post_processing,
                 min_subtitle_duration_sec=args.min_subtitle_duration,
                 ocr_image_max_width=args.ocr_image_max_width,
-                subtitle_alignments=[args.subtitle_alignment, args.subtitle_alignment2]
+                subtitle_alignments=[args.subtitle_alignment, args.subtitle_alignment2],
+                llm_api_key=llm_api_key,
+                llm_api_base=llm_api_base,
+                llm_model=llm_model,
+                llm_concurrency=args.llm_concurrency,
+                llm_disable_inference=args.llm_disable_inference,
+                llm_max_frames_per_grid=args.llm_max_frames_per_grid,
+                llm_image_quality=args.llm_image_quality
             )
     except ValueError as e:
         print(f"Error: {e}")

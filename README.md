@@ -1,8 +1,8 @@
-English | [中文](https://github.com/timminator/VideOCR/blob/master/README_ch.md)
+English | [中文](https://github.com/kiriya55/VideOCRplus/blob/master/README_ch.md)
 
 <p align="center">
-<img src="https://github.com/timminator/VideOCR/blob/master/Pictures/VideOCR.png" alt="VideOCR Icon" width="128">
-  <h1 align="center">VideOCR</h1>
+<img src="https://github.com/kiriya55/VideOCRplus/blob/master/Pictures/VideOCR.png" alt="VideOCRplus Icon" width="128">
+  <h1 align="center">VideOCRplus</h1>
   <p align="center">
     Extract hardcoded subtitles from videos!
     <br />
@@ -13,11 +13,29 @@ English | [中文](https://github.com/timminator/VideOCR/blob/master/README_ch.m
 
 ## ℹ About
 
-Extract hardcoded (burned-in) subtitles from videos via a simple-to-use GUI. VideOCR supports both 100% local processing utilizing the **[PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)** engine, as well as a hybrid cloud-based approach using **Google Lens** for highly accurate text recognition. Everything can be easily configured via a few clicks.
+**VideOCRplus** is a fork of [VideOCR](https://github.com/timminator/VideOCR) by timminator, extended with a **Vision LLM OCR engine** and a **plugin-based component download system**.
 
-This repository also provides a version of VideOCR that can be used from the command line in combination with the supported OCR engines.
+Extract hardcoded (burned-in) subtitles from videos via a simple-to-use GUI. VideOCRplus supports three OCR engines:
 
-The latest release incorporates the newest version of PaddleOCR for local processing and introduces the new Google Lens hybrid mode.
+- **PaddleOCR** — 100% local text detection and recognition
+- **Google Lens** — Hybrid mode: local detection + cloud recognition
+- **LLM Vision** — Hybrid mode: local detection + Vision LLM recognition with semantic deduplication
+
+Everything can be easily configured via a few clicks.
+
+This repository also provides a CLI version of VideOCRplus.
+
+### What's New Compared to the Original
+
+| Feature | Original VideOCR | VideOCRplus |
+|---------|-----------------|-------------|
+| OCR Engines | PaddleOCR, Google Lens | PaddleOCR, Google Lens, **LLM Vision** |
+| Component Management | Bundled in release | **Plugin-based download** with progress tracking |
+| Download Acceleration | N/A | **gh-proxy.com** support for China users |
+| LLM Deduplication | N/A | **Semantic dedup** via Vision LLM (replaces Levenshtein) |
+| Concurrent Processing | N/A | **Concurrent LLM API calls** with configurable workers |
+| LLM Grid Optimization | N/A | **Auto grid sizing** + text-based cross-grid dedup |
+| Developer Mode | N/A | Run directly via `python gui.py` / `python cli.py` |
 
 ## Setup
 
@@ -26,50 +44,89 @@ You can either install it with the setup installer or you can just download a fo
 
 ### Linux:
 Download the tarball archive from the releases page and unzip it to your desired location.
-Optionally you can add VideOCR to your App menus if you want to.
+Optionally you can add VideOCRplus to your App menus if you want to.
 For this step open a terminal where you unpacked the archive and run:
 
 ```
 ./install_videocr.sh
 ```
-This will create a shortcut for VideOCR. You can remove it via:  
+This will create a shortcut for VideOCRplus. You can remove it via:  
 
 ```
 ./uninstall_videocr.sh
 ```
 
+### Plugin Downloads
+
+VideOCRplus uses a plugin-based system for OCR engine components. On first run, the required components can be downloaded directly from the GUI **Settings** tab:
+
+- **PaddleOCR Models** (~250MB) — Required for all engines (text detection)
+- **PaddleOCR CPU/GPU** (~140MB–1.2GB) — Required for PaddleOCR engine
+- **Google Lens CLI** (~12MB) — Required for Google Lens engine
+- LLM Vision engine requires no local components (uses external API)
+
+You can choose between direct GitHub download or **gh-proxy.com** acceleration (recommended for users in China).
+
 ## Usage
 
-Import a video and seek through the video via the timeline. You can also use the right and left arrow keys. Then you can just draw a crop box over the right part of the video. Use click+drag to select. Afterwards you can start the subtitle extraction process via the "Run" Button.
+### Developer Mode (run from source)
 
-Further options can be configured in the "Advanced Settings" Tab. You can find more info about them in the parameters section available in the CLI version.
-![image](https://github.com/timminator/VideOCR/blob/master/Pictures/GUI.png)
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run GUI
+python gui.py
+
+# Run CLI
+python cli.py -h
+```
+
+### Using the GUI
+
+Import a video and seek through the video via the timeline. You can also use the right and left arrow keys. Then draw a crop box over the subtitle region. Use click+drag to select. Afterwards start the subtitle extraction process via the "Run" button.
+
+Further options can be configured in the "Advanced Settings" tab. You can find more info about them in the parameters section available in the CLI version.
+![image](https://github.com/kiriya55/VideOCRplus/blob/master/Pictures/GUI.png)
 
 ## Usage (CLI version)
-  
-There is also a CLI version available. Unzip the archive to your desired location and open a terminal in there. Afterwards you can run the following command:
 
-### Windows:
+### From source:
+```bash
+python cli.py -h
+```
+
+### Compiled binary (from releases):
+
+Windows:
 ```
 .\videocr-cli.exe -h
 ```
 
-### Linux:
+Linux:
 ```
 ./videocr-cli.bin -h
 ```
 
-### Example usage (Windows):
+### Example usage:
+```bash
+python cli.py --video_path "Path/to/your/video/example.mp4" --output "Path/to/your/desired/subtitle/location/example.srt" --lang en --time_start "18:40" --use_gpu true
 ```
-.\videocr-cli.exe --video_path "Path\to\your\video\example.mp4" --output "Path\to\your\desired\subtitle\location\example.srt" --lang en --time_start "18:40" --use_gpu true
+
+### Example usage with LLM Vision:
+```bash
+python cli.py --video_path "Path/to/your/video/example.mp4" --output "Path/to/your/desired/subtitle/location/example.srt" --ocr_engine llm_vision --llm_api_key YOUR_KEY --llm_api_base https://api.openai.com/v1 --llm_model gpt-4o
 ```
+
 More info about the arguments can be found in the parameters section further down.
 
 ## Performance
 
 Local OCR processing with PaddleOCR can be slow on a CPU. Using this in combination with a GPU is highly recommended.
 
-Alternatively, using the google_lens engine offloads the heaviest part of the pipeline (text recognition) to the cloud. This makes it an excellent and fast choice for users without a powerful GPU, provided they have an active internet connection.
+Alternatively, using the `google_lens` engine offloads the heaviest part of the pipeline (text recognition) to the cloud. This makes it an excellent and fast choice for users without a powerful GPU, provided they have an active internet connection.
+
+The `llm_vision` engine uses a Vision LLM for both recognition and semantic deduplication. It sends batches of subtitle frames as grids to the LLM API, achieving better deduplication accuracy than traditional Levenshtein distance. Features automatic grid sizing based on video dimensions, text-based cross-grid deduplication, and SSIM-based frame grouping. Supports OpenAI-compatible and Anthropic APIs.
 
 ## Tips
 
@@ -96,15 +153,17 @@ Input Video Quality       | Use lower quality           | Use higher quality  | 
 
 - `ocr_engine`
 
-  Select the OCR engine to use for text detection and recognition. Valid values are `paddleocr` (default) and `google_lens`. 
-  `paddleocr` uses 100% local processing for both text detection and recognition. 
+  Select the OCR engine to use for text detection and recognition. Valid values are `paddleocr` (default), `google_lens`, and `llm_vision`.
+  `paddleocr` uses 100% local processing for both text detection and recognition.
   `google_lens` uses hybrid processing where PaddleOCR handles the text detection locally and Google Lens handles the text recognition. Note: The `google_lens` mode requires an active internet connection.
+  `llm_vision` uses hybrid processing where PaddleOCR handles the text detection locally and a Vision LLM handles text recognition with semantic deduplication. Note: The `llm_vision` mode requires an API key and an active internet connection.
 
 - `lang`
 
   The language of the subtitles. The supported languages and abbreviations depend on your selected `ocr_engine`.
   - For `paddleocr`: See the [PaddleOCR docs](https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/algorithm/PP-OCRv5/PP-OCRv5_multi_languages.en.md).
   - For `google_lens`: See the [Google Lens docs](https://docs.cloud.google.com/vision/docs/languages).
+  - For `llm_vision`: Supports a wide range of languages including `auto` for automatic detection.
 
 - `subtitle_position`
 
@@ -147,7 +206,7 @@ Input Video Quality       | Use lower quality           | Use higher quality  | 
 - `crop_x(2)`, `crop_y(2)`, `crop_width(2)`, `crop_height(2)`
 
   Specifies the bounding area(s) in pixels for the portion of the frame that will be used for OCR. See image below for example:
-  ![image](https://github.com/timminator/VideOCR/blob/master/Pictures/crop_example.png)
+  ![image](https://github.com/kiriya55/VideOCRplus/blob/master/Pictures/crop_example.png)
 
 - `subtitle_alignment(2)`
 
@@ -185,8 +244,37 @@ Input Video Quality       | Use lower quality           | Use higher quality  | 
 
   By default the smaller model are used for the OCR process. This parameter enables the usage of the server models for OCR. This can result in better text detection at the cost of more processing power. Should only ever be used in the GPU version.
 
+### LLM Vision Parameters
+
+- `llm_api_key`
+
+  API key for the Vision LLM service. Can also be set via the `LLM_API_KEY` environment variable.
+
+- `llm_api_base`
+
+  Base URL for the LLM API endpoint. Supports OpenAI-compatible APIs (e.g., `https://api.openai.com/v1`) and Anthropic API (`https://api.anthropic.com`). Can also be set via the `LLM_API_BASE` environment variable.
+
+- `llm_model`
+
+  Model name to use for the Vision LLM (e.g., `gpt-4o`, `claude-sonnet-4-20250514`). Can also be set via the `LLM_MODEL` environment variable.
+
+- `llm_concurrency`
+
+  Number of concurrent LLM API requests. Default is `4`. Higher values speed up processing but may hit API rate limits.
+
 
 ## Build and Compile Instructions
+
+### Developer Mode (no build required)
+
+```bash
+git clone https://github.com/kiriya55/VideOCRplus.git
+cd VideOCRplus
+pip install -r requirements.txt
+python gui.py
+```
+
+### Building Compiled Binaries
 
 - Requirements:
     - Python 3.9 or higher
@@ -205,11 +293,11 @@ Input Video Quality       | Use lower quality           | Use higher quality  | 
 
     - Clone the repository to your desired location:
       ```bash
-      git clone https://github.com/timminator/VideOCR.git
+      git clone https://github.com/kiriya55/VideOCRplus.git
       ```
     - Navigate into the cloned folder and install all dependencies:
       ```bash
-      cd VideOCR
+      cd VideOCRplus
       python -m pip install --upgrade pip
       pip install . --group all
       ```
@@ -221,3 +309,26 @@ Input Video Quality       | Use lower quality           | Use higher quality  | 
     ```bash
     python build.py -h
     ```
+
+### Project Structure
+
+```
+VideOCRplus/
+├── gui.py              # GUI entry point
+├── cli.py              # CLI entry point
+├── videocr/            # Core library
+├── languages/          # UI translations (en/ch/ja)
+├── build.py            # Build script
+├── requirements.txt    # Python dependencies
+└── ...
+```
+
+## Credits
+
+- Original project: [VideOCR](https://github.com/timminator/VideOCR) by [timminator](https://github.com/timminator)
+- OCR engine: [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)
+- Google Lens CLI: [Chrome-Lens-OCR](https://github.com/timminator/Chrome-Lens-OCR)
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

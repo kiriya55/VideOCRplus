@@ -12,11 +12,11 @@
 #endif
 
 
-#define MyAppName "VideOCR"
-#define MyAppURL "https://github.com/timminator/VideOCR"
+#define MyAppName "VideOCRplus"
+#define MyAppURL "https://github.com/kiriya55/VideOCRplus"
 #define MyAppExeName "VideOCR.exe"
 #define MyInstallerVersion MyAppVersion + ".0"
-#define MyAppCopyright "timminator"
+#define MyAppCopyright "kiriya55"
 
 [Setup]
 #ifdef UseSignTool
@@ -90,8 +90,8 @@ Type: filesandordirs; Name: "{app}\videocr-cli-*"
 
 [UninstallDelete]
 Type: files; Name: "{app}\videocr_gui_config.ini"
-Type: filesandordirs; Name: "{userappdata}\VideOCR"
-Type: filesandordirs; Name: "{localappdata}\VideOCR"
+Type: filesandordirs; Name: "{userappdata}\VideOCRplus"
+Type: filesandordirs; Name: "{localappdata}\VideOCRplus"
 
 [Code]
 function GetToken(const S: string; Index: Integer): Integer;
@@ -171,7 +171,7 @@ begin
 
     if VersionCompare(OldVersion, '1.5.0') < 0 then
     begin
-      NewConfigPath := ExpandConstant('{userappdata}\\VideOCR\\videocr_gui_config.ini');
+      NewConfigPath := ExpandConstant('{userappdata}\\VideOCRplus\\videocr_gui_config.ini');
       if FileExists(NewConfigPath) then
         DeleteFile(NewConfigPath);
     end;
@@ -179,7 +179,7 @@ begin
 
   if CurStep = ssPostInstall then
   begin
-    NewConfigPath := ExpandConstant('{userappdata}\\VideOCR\\videocr_gui_config.ini');
+    NewConfigPath := ExpandConstant('{userappdata}\\VideOCRplus\\videocr_gui_config.ini');
 
     if not FileExists(NewConfigPath) then
     begin

@@ -5,12 +5,12 @@ APPDIR="$(cd "$(dirname "$0")" && pwd)"
 EXEC="$APPDIR/VideOCR.bin"
 ICON="$APPDIR/VideOCR.png"
 DESKTOP_DIR="$HOME/.local/share/applications"
-DESKTOP_FILE="$DESKTOP_DIR/VideOCR.desktop"
+DESKTOP_FILE="$DESKTOP_DIR/VideOCRplus.desktop"
 PORTABLE_FLAG="$APPDIR/portable_mode.txt"
 
 # Define config and log directories
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/VideOCR"
-LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/VideOCR"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/VideOCRplus"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/VideOCRplus"
 
 # Check for and remove old configurations/logs to ensure a clean install
 if [ -d "$CONFIG_DIR" ] || [ -d "$LOG_DIR" ]; then
@@ -25,7 +25,7 @@ mkdir -p "$DESKTOP_DIR"
 # Create the .desktop file
 cat > "$DESKTOP_FILE" <<EOL
 [Desktop Entry]
-Name=VideOCR
+Name=VideOCRplus
 Comment=Extract hardcoded subtitles from video
 Exec=$EXEC
 Icon=$ICON
@@ -40,8 +40,8 @@ update-desktop-database "$HOME/.local/share/applications" 2>/dev/null
 
 if [ -f "$PORTABLE_FLAG" ]; then
     rm "$PORTABLE_FLAG"
-    echo "Removed portable flag. Settings will now be saved to ~/.config/VideOCR/"
+    echo "Removed portable flag. Settings will now be saved to ~/.config/VideOCRplus/"
 fi
 
-echo "Installed VideOCR desktop shortcut to:"
+echo "Installed VideOCRplus desktop shortcut to:"
 echo "$DESKTOP_FILE"

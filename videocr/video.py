@@ -7,6 +7,7 @@ import os
 import queue
 import re
 import shutil
+import sys
 import threading
 from typing import Any, cast
 
@@ -16,8 +17,9 @@ import numpy as np
 import wordninja_enhanced as wordninja  # type: ignore
 from PIL import Image
 
-from . import utils
+from . import llm_vision, utils
 from .models import PredictedFrames, PredictedSubtitle
+from thefuzz import fuzz  # type: ignore
 from .pyav_adapter import Capture, get_video_properties
 
 
@@ -61,7 +63,9 @@ class Video:
 
     def run_ocr(self, use_gpu: bool, ocr_engine: str, lang: str, use_angle_cls: bool, time_start: str, time_end: str, conf_threshold: int,
                 use_fullframe: bool, brightness_threshold: int | None, ssim_threshold: int, subtitle_position: str, frames_to_skip: int,
-                crop_zones: list[dict[str, int]], ocr_image_max_width: int, normalize_to_simplified_chinese: bool) -> None:
+                crop_zones: list[dict[str, int]], ocr_image_max_width: int, normalize_to_simplified_chinese: bool,
+                llm_api_key: str = '', llm_api_base: str = '', llm_model: str = '', llm_concurrency: int = 4,
+                llm_disable_inference: bool = False, llm_max_frames_per_grid: int = 0, llm_image_quality: int = 75) -> None:
         conf_threshold_ratio = conf_threshold / 100
         ssim_threshold_ratio = ssim_threshold / 100
         self.lang = lang
@@ -531,7 +535,7 @@ class Video:
 
             print("Starting PaddleOCR...", flush=True)
 
-            for line in utils.stream_cli_process(args, "paddleocr_error.log"):
+            for line in utils.stream_cli_process(args, "paddleocr_error.log", cwd=os.path.dirname(self.paddleocr_path)):
                 if "ppocr INFO: Processed item" in line:
                     match = re.search(r"Processed item (\d+)", line)
                     if match:
@@ -581,6 +585,14 @@ class Video:
 
             rec_images_dir = os.path.join(temp_dir, "rec_images")
             os.makedirs(rec_images_dir, exist_ok=True)
+
+            # LLM Vision: directory for grid images sent to LLM
+            llm_grids_dir = os.path.join(temp_dir, "llm_grids") if ocr_engine == "llm_vision" else ""
+            if llm_grids_dir:
+                os.makedirs(llm_grids_dir, exist_ok=True)
+            llm_grids: list[dict[str, Any]] = []  # [{path, frame_indices, zone_idx}]
+            llm_grid_counter = 0
+            llm_representative_frames: list[dict[str, Any]] = []  # best frame per SSIM batch
 
             empty_frames_meta: set[tuple[int, int]] = set()
             surviving_frames_meta: set[tuple[int, int]] = set()
@@ -680,24 +692,41 @@ class Video:
                         ]
 
                         for ssim_args in group_args:
-                            surviving_items, local_deleted = utils.process_ssim_group(*ssim_args)
-                            frames_deleted_count += local_deleted
+                            if ocr_engine == "llm_vision":
+                                # LLM mode: SSIM already deduplicated, just pick best frame per batch
+                                llm_batches = utils.process_ssim_group_for_llm(*ssim_args)
+                                for batch in llm_batches:
+                                    # Mark all frames as surviving (SSIM kept them)
+                                    for item in batch:
+                                        surviving_frames_meta.add((item["frame_idx"], z_idx))
+                                    # Pick the best frame (highest detection score) as representative
+                                    best_item = max(batch, key=lambda x: x["det_score"])
+                                    llm_representative_frames.append({
+                                        "img": best_item["img"],
+                                        "frame_idx": best_item["frame_idx"],
+                                        "batch_indices": [item["frame_idx"] for item in batch],
+                                        "zone_idx": z_idx,
+                                    })
+                                frames_processed += len(ssim_args[1])
+                            else:
+                                surviving_items, local_deleted = utils.process_ssim_group(*ssim_args)
+                                frames_deleted_count += local_deleted
 
-                            for item in surviving_items:
-                                surviving_frames_meta.add((item["frame_idx"], z_idx))
+                                for item in surviving_items:
+                                    surviving_frames_meta.add((item["frame_idx"], z_idx))
 
-                                filename = f"rec_image_{rec_counter:0{FILENAME_ZERO_PADDING}d}_zone{z_idx}.jpg"
-                                filepath = os.path.join(rec_images_dir, filename)
-                                h, w = item["img"].shape[:2]
-                                write_queue.put((filepath, w, h, [(item["img"], 0, 0)]))
+                                    filename = f"rec_image_{rec_counter:0{FILENAME_ZERO_PADDING}d}_zone{z_idx}.jpg"
+                                    filepath = os.path.join(rec_images_dir, filename)
+                                    h, w = item["img"].shape[:2]
+                                    write_queue.put((filepath, w, h, [(item["img"], 0, 0)]))
 
-                                rec_image_map[filename] = {
-                                    "frame_idx": item["frame_idx"],
-                                    "zone_idx": z_idx
-                                }
-                                rec_counter += 1
+                                    rec_image_map[filename] = {
+                                        "frame_idx": item["frame_idx"],
+                                        "zone_idx": z_idx
+                                    }
+                                    rec_counter += 1
 
-                            frames_processed += len(ssim_args[1])
+                                frames_processed += len(ssim_args[1])
 
                             if frames_processed >= next_print_target:
                                 print(f"\rAnalyzing frame {frames_processed} of {total_stitched_frames}", end="", flush=True)
@@ -734,7 +763,42 @@ class Video:
 
             print(f"\nFiltered out {frames_deleted_count} redundant frame(s) via Text-Detection and tight-box SSIM analysis.", flush=True)
 
-            if rec_counter == 0:
+            # LLM Vision: build grids from representative frames (one per SSIM batch)
+            if ocr_engine == "llm_vision" and llm_representative_frames:
+                LLM_MAX_GRID_PIXELS = 2_000_000
+                rep_imgs = [f["img"] for f in llm_representative_frames]
+                fh, fw = rep_imgs[0].shape[:2]
+                grid_width = fw
+                cols = max(1, (grid_width + GRID_SPACING) // (fw + GRID_SPACING))
+                # Auto-calculate from zone dimensions and pixel limit
+                max_by_pixels = max(1, LLM_MAX_GRID_PIXELS // (fw * fh))
+                if llm_max_frames_per_grid > 0:
+                    max_frames_per_grid = max(1, min(llm_max_frames_per_grid, max_by_pixels))
+                else:
+                    max_frames_per_grid = max_by_pixels
+                print(f"LLM grid auto: {fw}x{fh}/frame, {max_frames_per_grid} frames/grid, {len(llm_representative_frames)} reps total", flush=True)
+
+                for chunk_start in range(0, len(llm_representative_frames), max_frames_per_grid):
+                    chunk = llm_representative_frames[chunk_start:chunk_start + max_frames_per_grid]
+                    chunk_imgs = [f["img"] for f in chunk]
+                    # Each grid entry maps to ALL frames in each representative's SSIM batch
+                    chunk_batch_indices = [f["batch_indices"] for f in chunk]
+                    grid = llm_vision.build_grid_image(chunk_imgs, max_width=grid_width)
+                    filename = f"llm_grid_{llm_grid_counter:0{FILENAME_ZERO_PADDING}d}.jpg"
+                    filepath = os.path.join(llm_grids_dir, filename)
+                    # Write directly to disk — don't use write_queue (writer threads may have exited)
+                    Image.fromarray(grid).save(filepath, quality=80)
+                    llm_grids.append({
+                        "path": filepath,
+                        "frame_indices": chunk_batch_indices,  # list of lists
+                        "zone_idx": chunk[0]["zone_idx"],
+                        "is_representative": True,
+                    })
+                    llm_grid_counter += 1
+
+                print(f"Created {llm_grid_counter} LLM grid(s) from representative frames.", flush=True)
+
+            if rec_counter == 0 and not llm_grids:
                 return
 
             # --------------------------------------------------------
@@ -755,7 +819,7 @@ class Video:
 
                 print("Starting Google Lens CLI...", flush=True)
 
-                for line in utils.stream_cli_process(args, "google_lens_error.log"):
+                for line in utils.stream_cli_process(args, "google_lens_error.log", cwd=os.path.dirname(self.google_lens_path)):
                     line = line.strip()
                     if not line or not line.startswith('{') or '"file"' not in line:
                         continue
@@ -818,7 +882,7 @@ class Video:
                 print("Starting PaddleOCR...", flush=True)
 
                 current_image = None
-                for line in utils.stream_cli_process(args, "paddleocr_error.log"):
+                for line in utils.stream_cli_process(args, "paddleocr_error.log", cwd=os.path.dirname(self.paddleocr_path)):
                     line = line.strip()
 
                     if "ppocr INFO: **********" in line:
@@ -841,18 +905,139 @@ class Video:
             # Map 2D coordinates
             ocr_outputs: dict[tuple[int, int], list[Any]] = {}
 
-            for filename, results in rec_ocr_outputs.items():
-                if filename not in rec_image_map:
-                    continue
+            if ocr_engine == "llm_vision":
+                # LLM Vision: process collected grids through LLM API with concurrency
+                total_llm_grids = len(llm_grids)
+                print(f"Starting LLM Vision recognition on {total_llm_grids} grid(s) (concurrency={llm_concurrency})...", flush=True)
 
-                m = rec_image_map[filename]
-                coord_key = (m["frame_idx"], m["zone_idx"])
+                # Write initial log entry (using _llm_log defined below)
 
-                if coord_key not in ocr_outputs:
-                    ocr_outputs[coord_key] = []
+                llm_ocr_counter = 0
+                llm_errors: list[str] = []
+                llm_counter_lock = threading.Lock()
 
-                for word_pred in results:
-                    ocr_outputs[coord_key].append([word_pred[0], word_pred[1]])
+                # LLM debug log path — use system temp (NOT temp_dir, which gets deleted)
+                import tempfile as _tf_llm
+                _llm_log_path = os.path.join(_tf_llm.gettempdir(), "videocr_llm_debug.log")
+
+                def _llm_log(msg: str):
+                    """Thread-safe log writer."""
+                    import datetime as _dt
+                    try:
+                        with open(_llm_log_path, "a", encoding="utf-8") as f:
+                            f.write(f"[{_dt.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+                    except Exception:
+                        pass
+
+                _llm_log(f"=== LLM Vision Start: {total_llm_grids} grids, api_base={llm_api_base}, model={llm_model} ===")
+
+                # Verify grid files exist on disk (they were written directly, not via write_queue)
+                missing = [g["path"] for g in llm_grids if not os.path.exists(g["path"])]
+                if missing:
+                    _llm_log(f"ERROR: {len(missing)} grid files missing: {missing[:3]}")
+                    print(f"Warning: {len(missing)} grid image files not found on disk. LLM recognition may fail.", flush=True)
+
+                def process_single_grid(grid_info: dict[str, Any]) -> list[tuple[int, int, str, float]]:
+                    """Process one grid, return list of (frame_idx, zone_idx, text, confidence)."""
+                    try:
+                        grid_path = grid_info["path"]
+                        _llm_log(f"Starting grid: {os.path.basename(grid_path)}, exists={os.path.exists(grid_path)}")
+
+                        grid_img = np.array(Image.open(grid_path))
+                        zone_idx = grid_info["zone_idx"]
+                        is_rep = grid_info.get("is_representative", False)
+                        frame_indices = grid_info["frame_indices"]
+
+                        _llm_log(f"Processing grid: {os.path.basename(grid_path)}, is_rep={is_rep}, frames={len(frame_indices)}, img_shape={grid_img.shape}")
+
+                        llm_result = llm_vision.call_llm_api(
+                            grid_img, llm_api_key, llm_api_base, llm_model, lang,
+                            disable_inference=llm_disable_inference,
+                            image_quality=llm_image_quality
+                        )
+
+                        _llm_log(f"LLM result keys: {list(llm_result.keys())}, entries count: {len(llm_result.get('entries', []))}")
+
+                        results: list[tuple[int, int, str, float]] = []
+                        for entry in llm_result.get("entries", []):
+                            text = entry.get("text", "")
+                            frames = entry.get("frames", [])
+                            if not text or not frames:
+                                _llm_log(f"Skipping entry: text='{text[:50]}', frames={frames}")
+                                continue
+                            # Ensure frames is a list of integers
+                            if not isinstance(frames, list):
+                                _llm_log(f"Skipping entry: frames not a list, type={type(frames)}")
+                                continue
+                            # Convert to integers if needed (LLM might return strings)
+                            int_frames = []
+                            for f in frames:
+                                try:
+                                    int_frames.append(int(f))
+                                except (ValueError, TypeError):
+                                    continue
+                            if not int_frames:
+                                _llm_log(f"Skipping entry: no valid int frames from {frames}")
+                                continue
+                            _llm_log(f"Valid entry: text='{text[:50]}', int_frames={int_frames}")
+                            if is_rep:
+                                # frame_indices is list of lists: each grid position → batch of original frame indices
+                                for f in int_frames:
+                                    if f < len(frame_indices):
+                                        for orig_idx in frame_indices[f]:
+                                            results.append((orig_idx, zone_idx, text, 1.0))
+                            else:
+                                original_indices = [frame_indices[f] for f in int_frames if f < len(frame_indices)]
+                                for fidx in original_indices:
+                                    results.append((fidx, zone_idx, text, 1.0))
+                        _llm_log(f"Grid done: {os.path.basename(grid_path)}, results={len(results)}")
+                        return results
+                    except Exception as e:
+                        _llm_log(f"EXCEPTION in process_single_grid for {os.path.basename(grid_info.get('path', '?'))}: {type(e).__name__}: {e}")
+                        raise
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=llm_concurrency) as executor:
+                    future_to_grid = {executor.submit(process_single_grid, g): g for g in llm_grids}
+
+                    for future in concurrent.futures.as_completed(future_to_grid):
+                        try:
+                            results = future.result()
+                            for fidx, zone_idx, text, conf in results:
+                                ocr_outputs[(fidx, zone_idx)] = [(text, conf)]
+                        except Exception as e:
+                            grid_info = future_to_grid[future]
+                            llm_errors.append(f"Grid {os.path.basename(grid_info['path'])}: {e}")
+
+                        with llm_counter_lock:
+                            llm_ocr_counter += 1
+                            print(f"\rStep 3/3: LLM recognition on grid {llm_ocr_counter} of {total_llm_grids}", end="", flush=True)
+
+                print()
+
+                if llm_errors:
+                    error_summary = "; ".join(llm_errors[:5])
+                    if len(llm_errors) > 5:
+                        error_summary += f" ...and {len(llm_errors) - 5} more"
+                    print(f"Warning: {len(llm_errors)} grid(s) failed LLM recognition: {error_summary}", flush=True)
+
+                if not ocr_outputs:
+                    print(f"Warning: LLM returned no text for any of the {total_llm_grids} grid(s).", flush=True)
+                else:
+                    print(f"LLM recognized text in {len(ocr_outputs)} frame(s).", flush=True)
+
+            else:
+                for filename, results in rec_ocr_outputs.items():
+                    if filename not in rec_image_map:
+                        continue
+
+                    m = rec_image_map[filename]
+                    coord_key = (m["frame_idx"], m["zone_idx"])
+
+                    if coord_key not in ocr_outputs:
+                        ocr_outputs[coord_key] = []
+
+                    for word_pred in results:
+                        ocr_outputs[coord_key].append([word_pred[0], word_pred[1]])
 
             active_frame_coords = surviving_frames_meta | empty_frames_meta
 
@@ -886,6 +1071,9 @@ class Video:
 
             self.pred_frames_zone1 = frame_predictions_list.get(0, [])
             self.pred_frames_zone2 = frame_predictions_list.get(1, [])
+
+            if not self.pred_frames_zone1 and not self.pred_frames_zone2:
+                print("Warning: No subtitle frames were generated.", flush=True)
 
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -981,7 +1169,30 @@ class Video:
             else:
                 cleaned_subs.append(next_sub)
 
-        return cleaned_subs
+        # Text-based dedup: merge subs with identical/near-identical text regardless of time gap
+        # This handles cross-grid duplicates in LLM Vision mode
+        deduped = [cleaned_subs[0]]
+        for next_sub in cleaned_subs[1:]:
+            last_sub = deduped[-1]
+            if self._text_is_duplicate(last_sub.text, next_sub.text):
+                last_sub.frames.extend(next_sub.frames)
+                last_sub.frames.sort(key=lambda f: f.start_index)
+                last_sub.finalize_text(post_processing)
+            else:
+                deduped.append(next_sub)
+
+        return deduped
+
+    @staticmethod
+    def _text_is_duplicate(text_a: str, text_b: str) -> bool:
+        """Check if two subtitle texts are duplicates (exact match or near-identical)."""
+        if not text_a or not text_b:
+            return False
+        a = text_a.replace(' ', '').replace('\n', '')
+        b = text_b.replace(' ', '').replace('\n', '')
+        if a == b:
+            return True
+        return fuzz.ratio(a, b) >= 95
 
     def _merge_dual_zone_subtitles(self, subs1: list[PredictedSubtitle], subs2: list[PredictedSubtitle]) -> list[PredictedSubtitle]:
         all_subs = sorted(subs1 + subs2, key=lambda s: s.index_start)

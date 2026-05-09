@@ -3,6 +3,7 @@
 # nuitka-project: --enable-plugin=tk-inter
 # nuitka-project: --windows-console-mode=disable
 # nuitka-project: --include-windows-runtime-dlls=yes
+# nuitka-project: --output-filename=VideOCRplus
 # nuitka-project: --include-data-files=Installer/*.ico=VideOCR.ico
 # nuitka-project: --include-data-files=Installer/*.png=VideOCR.png
 # nuitka-project: --include-data-dir=languages=languages
@@ -55,6 +56,21 @@ else:
     from plyer import notification  # type: ignore
 
 from _version import __version__
+
+# Plugin manager for downloading OCR dependencies
+try:
+    from videocr.plugin_manager import (
+        PLUGIN_REGISTRY, get_all_plugins_status, get_missing_plugins,
+        check_plugin_status, PluginDownloadTask, get_install_dir,
+    )
+except ImportError:
+    # Running as standalone Nuitka build — plugin_manager may not be importable
+    PLUGIN_REGISTRY = {}
+    get_all_plugins_status = None  # type: ignore
+    get_missing_plugins = None  # type: ignore
+    check_plugin_status = None  # type: ignore
+    PluginDownloadTask = None  # type: ignore
+    get_install_dir = None  # type: ignore
 
 
 # -- Save errors to log file ---
@@ -174,13 +190,21 @@ def send_notification(title: str, message: str) -> None:
 
 # --- Determine VideOCR location ---
 def find_videocr_program() -> str | None:
-    """Determines the path to the videocr-cli executable (.exe or .bin)."""
+    """Determines the path to the videocr-cli executable (.exe or .bin),
+    or falls back to running via Python when in development mode."""
     program_name = 'videocr-cli'
     extension = ".exe" if sys.platform == "win32" else ".bin"
 
+    # Look for compiled executable
     root_path = os.path.join(APP_DIR, f'{program_name}{extension}')
     if os.path.exists(root_path):
         return root_path
+
+    # Fallback: look for the Python CLI script (development mode)
+    cli_script = os.path.join(APP_DIR, 'cli.py')
+    if os.path.exists(cli_script):
+        # Return a marker that we'll use to run via Python
+        return f"python:{cli_script}"
 
     return None
 
@@ -229,10 +253,37 @@ DEFAULT_TIME_START = "0:00"
 KEY_SEEK_STEP = 1
 CONFIG_FILE = get_config_file_path()
 CONFIG_SECTION = 'Settings'
+LLM_PRESETS_FILE = os.path.join(os.path.dirname(CONFIG_FILE), "llm_presets.json")
 try:
     DEFAULT_DOCUMENTS_DIR = str(pathlib.Path.home() / "Documents")
 except Exception:
     DEFAULT_DOCUMENTS_DIR = ""
+
+
+def load_llm_presets() -> dict[str, dict[str, str]]:
+    """Load LLM presets from JSON file."""
+    if os.path.exists(LLM_PRESETS_FILE):
+        try:
+            with open(LLM_PRESETS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_llm_presets(presets: dict[str, dict[str, str]]) -> None:
+    """Save LLM presets to JSON file."""
+    try:
+        with open(LLM_PRESETS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(presets, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        log_error(f"Error saving LLM presets: {e}")
+
+
+def get_llm_preset_names() -> list[str]:
+    """Get list of preset names."""
+    presets = load_llm_presets()
+    return ["Custom"] + sorted(presets.keys())
 
 # --- Language Data ---
 LANGUAGE_CODE_TO_NATIVE_NAME = {
@@ -354,7 +405,8 @@ lens_abbr_lookup = {name: abbr for name, abbr in GOOGLE_LENS_LANGUAGES_LIST}
 
 OCR_ENGINES = [
     'PaddleOCR (Det. + Rec.)',
-    'PaddleOCR (Det.) + Google Lens (Rec.)'
+    'PaddleOCR (Det.) + Google Lens (Rec.)',
+    'PaddleOCR (Det.) + LLM Vision (Rec.)'
 ]
 
 # Mapping from PaddleOCR internal codes to standard ISO 639 codes for deviating abbreviations
@@ -410,25 +462,6 @@ DEFAULT_ACTION_TEXTS = {
     'action_lock': 'Lock'
 }
 
-# --- Status Translation Helpers ---
-INTERNAL_STATUS_TO_LANG_KEY = {
-    'Pending': 'status_pending',
-    'Processing': 'status_processing',
-    'Completed': 'status_completed',
-    'Cancelled': 'status_cancelled_queue',
-    'Error': 'status_error',
-    'Paused': 'status_paused'
-}
-
-DEFAULT_STATUS_TEXTS = {
-    'status_pending': 'Pending',
-    'status_processing': 'Processing',
-    'status_completed': 'Completed',
-    'status_cancelled_queue': 'Cancelled',
-    'status_error': 'Error',
-    'status_paused': 'Paused'
-}
-
 # --- GUI Scaling Data ---
 GUI_SCALING_LIST = [
     ('system_default', 'System Default'),
@@ -477,7 +510,6 @@ prog = None
 previous_taskbar_state = None
 LANG: dict[str, str] = {}
 current_wake_lock: Any = None
-batch_queue: list[dict[str, Any]] = []
 gui_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
 
 
@@ -553,20 +585,6 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         '-LBL-PROGRESS-': {'text': 'lbl_progress'},
         '-LBL-LOG-': {'text': 'lbl_log'},
         '-LBL-WHEN_READY-': {'text': 'lbl_when_ready'},
-        '-BTN-ADD-BATCH-': {'text': 'btn_add_to_queue'},
-        '-BTN-BATCH-ADD-ALL-': {'text': 'btn_add_all_to_queue'},
-
-        # Queue Tab
-        '-TAB-BATCH-': {'text': 'tab_batch'},
-        '-LBL-QUEUE-TITLE-': {'text': 'lbl_queue_title'},
-        '-BTN-BATCH-START-': {'text': 'btn_start_queue'},
-        '-BTN-BATCH-STOP-': {'text': 'btn_stop_queue'},
-        '-BTN-BATCH-UP-': {'tooltip': 'tip_batch_up'},
-        '-BTN-BATCH-DOWN-': {'tooltip': 'tip_batch_down'},
-        '-BTN-BATCH-RESET-': {'text': 'btn_reset', 'tooltip': 'tip_batch_reset'},
-        '-BTN-BATCH-EDIT-': {'text': 'btn_edit', 'tooltip': 'tip_batch_edit'},
-        '-BTN-BATCH-REMOVE-': {'text': 'btn_remove', 'tooltip': 'tip_batch_remove'},
-        '-BTN-BATCH-CLEAR-': {'text': 'btn_clear_queue', 'tooltip': 'tip_batch_clear'},
 
         # Tab 2
         '-TAB-ADVANCED-': {'text': 'tab_advanced'},
@@ -602,6 +620,21 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         '--use_angle_cls': {'text': 'chk_angle_cls', 'tooltip': 'tip_angle_cls'},
         '--post_processing': {'text': 'chk_post_processing', 'tooltip': 'tip_post_processing'},
         '--use_server_model': {'text': 'chk_server_model', 'tooltip': 'tip_server_model'},
+        '-LBL-LLM_SETTINGS-': {'text': 'lbl_llm_settings'},
+        '-LBL-LLM_API_KEY-': {'text': 'lbl_llm_api_key', 'tooltip': 'tip_llm_api_key'},
+        '--llm_api_key': {'tooltip': 'tip_llm_api_key'},
+        '-LBL-LLM_API_BASE-': {'text': 'lbl_llm_api_base', 'tooltip': 'tip_llm_api_base'},
+        '--llm_api_base': {'tooltip': 'tip_llm_api_base'},
+        '-LBL-LLM_MODEL-': {'text': 'lbl_llm_model', 'tooltip': 'tip_llm_model'},
+        '--llm_model': {'tooltip': 'tip_llm_model'},
+        '-LBL-LLM_CONCURRENCY-': {'text': 'lbl_llm_concurrency', 'tooltip': 'tip_llm_concurrency'},
+        '--llm_concurrency': {'tooltip': 'tip_llm_concurrency'},
+        '--llm_disable_inference': {'text': 'lbl_llm_disable_inference', 'tooltip': 'tip_llm_disable_inference'},
+        '-LBL-LLM_IMAGE_QUALITY-': {'text': 'lbl_llm_image_quality', 'tooltip': 'tip_llm_image_quality'},
+        '--llm_image_quality': {'tooltip': 'tip_llm_image_quality'},
+        '-LBL-DOWNLOAD_SETTINGS-': {'text': 'lbl_download_settings'},
+        '-LBL-DL_SOURCE-': {'text': 'lbl_dl_source', 'tooltip': 'tip_dl_source'},
+        '-DL_SOURCE-': {'tooltip': 'tip_dl_source'},
         '-LBL-VIDEOCR_SETTINGS-': {'text': 'lbl_videocr_settings'},
         '-LBL-UI_LANG-': {'text': 'lbl_ui_lang', 'tooltip': 'tip_ui_lang'},
         '-UI_LANG_COMBO-': {'tooltip': 'tip_ui_lang'},
@@ -657,19 +690,6 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
 
     if '-BTN-PAUSE-' in window.AllKeysDict:
         window['-BTN-PAUSE-'].update(text=pause_btn_text)
-    if '-BTN-BATCH-PAUSE-' in window.AllKeysDict:
-        window['-BTN-BATCH-PAUSE-'].update(text=pause_btn_text)
-
-    if '-BATCH-TABLE-' in window.AllKeysDict:
-        try:
-            table_widget = window['-BATCH-TABLE-'].Widget
-            table_widget.heading('#1', text=LANG.get('col_video_file', 'Video File'))
-            table_widget.heading('#2', text=LANG.get('col_output_file', 'Output File'))
-            table_widget.heading('#3', text=LANG.get('col_status', 'Status'))
-        except Exception as e:
-            log_error(f"Failed to update table headings: {e}")
-
-        refresh_batch_table(window)
 
     current_idx = window['-POST_ACTION-'].Widget.current()
     update_post_action_combo(window, current_idx)
@@ -943,7 +963,7 @@ def check_for_updates(window: sg.Window, manual_check: bool = False) -> None:
     """Checks GitHub for a new release."""
     try:
         headers = {'User-Agent': 'VideOCR-GUI'}
-        req = urllib.request.Request("https://api.github.com/repos/timminator/VideOCR/releases/latest", headers=headers)
+        req = urllib.request.Request("https://api.github.com/repos/kiriya55/VideOCRplus/releases/latest", headers=headers)
 
         with urllib.request.urlopen(req, timeout=5) as response:
             if response.status == 200:
@@ -1029,13 +1049,6 @@ def update_gui_scaling_combo(window: sg.Window, selected_index: int | None = Non
         window['gui_scaling'].update(value=display_val, values=translated_names)
 
 
-def get_translated_status(internal_status: str) -> str:
-    """Translates internal status codes to display language."""
-    lang_key = INTERNAL_STATUS_TO_LANG_KEY.get(internal_status)
-    if lang_key:
-        return LANG.get(lang_key, DEFAULT_STATUS_TEXTS.get(lang_key, internal_status))
-    return internal_status
-
 
 # --- Settings Save/Load Functions ---
 def get_default_settings() -> dict[str, Any]:
@@ -1075,6 +1088,12 @@ def get_default_settings() -> dict[str, Any]:
     'prevent_system_sleep': True,
     '--normalize_to_simplified_chinese': True,
     'gui_scaling': 'System Default',
+    '--llm_api_key': '',
+    '--llm_api_base': '',
+    '--llm_model': '',
+    '--llm_concurrency': '4',
+    '--llm_disable_inference': False,
+    '--llm_image_quality': '75',
     }
 
 
@@ -1169,7 +1188,10 @@ def load_settings(window: sg.Window) -> None:
                 saved_engine = config.get(CONFIG_SECTION, '-OCR_ENGINE_COMBO-', fallback=DEFAULT_OCR_ENGINE)
                 window['-OCR_ENGINE_COMBO-'].update(value=saved_engine)
 
-                active_lang_list = lens_display_names if "Google Lens" in saved_engine else paddle_display_names
+                if "Google Lens" in saved_engine:
+                    active_lang_list = lens_display_names
+                else:
+                    active_lang_list = paddle_display_names
                 window['-LANG_COMBO-'].update(values=active_lang_list)
 
                 settings_to_load = [
@@ -1257,6 +1279,12 @@ def load_settings(window: sg.Window) -> None:
                 config.write(configfile)
         except Exception as e:
             log_error(f"Error creating default config file {CONFIG_FILE}: {e}")
+
+    # Load LLM presets
+    try:
+        window['-LLM_PRESET-'].update(values=get_llm_preset_names(), value="Custom")
+    except Exception:
+        pass
 
 
 def generate_output_path(video_path: str, values: dict[str, Any], default_dir: str = DEFAULT_DOCUMENTS_DIR) -> pathlib.Path:
@@ -1638,6 +1666,8 @@ def get_processing_args(values: dict[str, Any], window: sg.Window) -> tuple[dict
         '--frames_to_skip': (int, 0, None, "Frames to Skip"),
         '--max_merge_gap': (float, 0.0, None, "Max Merge Gap"),
         '--min_subtitle_duration': (float, 0.0, None, "Minimum Subtitle Duration"),
+        '--llm_concurrency': (int, 1, 32, "LLM Concurrency"),
+        '--llm_image_quality': (int, 50, 100, "LLM Image Quality"),
     }
 
     for key, (cast_type, min_val, max_val, name) in numeric_params.items():
@@ -1675,6 +1705,12 @@ def get_processing_args(values: dict[str, Any], window: sg.Window) -> tuple[dict
     if "Google Lens" in selected_engine_display:
         args['ocr_engine'] = 'google_lens'
         lang_abbr = lens_abbr_lookup.get(values.get('-LANG_COMBO-', DEFAULT_SUBTITLE_LANGUAGE))
+    elif "LLM Vision" in selected_engine_display:
+        args['ocr_engine'] = 'llm_vision'
+        lang_abbr = paddle_abbr_lookup.get(values.get('-LANG_COMBO-', DEFAULT_SUBTITLE_LANGUAGE))
+        # Convert PaddleOCR codes to ISO codes for LLM Vision
+        if lang_abbr:
+            lang_abbr = PADDLE_TO_ISO_MAP.get(lang_abbr, lang_abbr)
     else:
         args['ocr_engine'] = 'paddleocr'
         lang_abbr = paddle_abbr_lookup.get(values.get('-LANG_COMBO-', DEFAULT_SUBTITLE_LANGUAGE))
@@ -1728,7 +1764,7 @@ def get_processing_args(values: dict[str, Any], window: sg.Window) -> tuple[dict
         if window.crop_boxes:
             args.update(window.crop_boxes[0]['coords'])
 
-    # Explicit Output Path (needed for batch snapshots)
+    # Explicit Output Path
     out_path = values.get('--output')
     if not out_path and video_path:
         out_path = generate_output_path(video_path, values)
@@ -1757,7 +1793,12 @@ def run_videocr(args_dict: dict[str, Any], window: sg.Window) -> bool:
         gui_queue.put(('-VIDEOCR_OUTPUT-', error_msg))
         return False
 
-    command = [VIDEOCR_PATH]
+    # Handle development mode (running via Python script)
+    if VIDEOCR_PATH.startswith("python:"):
+        cli_script = VIDEOCR_PATH[7:]  # Remove "python:" prefix
+        command = [sys.executable, cli_script]
+    else:
+        command = [VIDEOCR_PATH]
 
     for key, value in args_dict.items():
         if value is not None and value != '':
@@ -1773,10 +1814,11 @@ def run_videocr(args_dict: dict[str, Any], window: sg.Window) -> bool:
     WARNING_HARDWARE_PATTERN = re.compile(r"Hardware Check Warning: (.*)")
     PROCESS_ERROR_PATTERN = re.compile(r"Error: Process failed.")
     STEP1_PROGRESS_PATTERN = re.compile(r"Step (\d+)/\d+: Processing video\.\.\. Current: ([\d:]+) / ([\d:]+|Unknown), Frame: (\d+)")
-    STEP_IMAGE_PROGRESS_PATTERN = re.compile(r"Step (\d+)/\d+: Performing (?:Text-Detection|OCR) on image (\d+) of (\d+)")
+    STEP_IMAGE_PROGRESS_PATTERN = re.compile(r"Step (\d+)/\d+: (?:Performing (?:Text-Detection|OCR) on image|LLM recognition on grid) (\d+) of (\d+)")
     REPACKING_PATTERN = re.compile(r"Analyzing frame (\d+) of (\d+)")
     STARTING_PADDLEOCR_PATTERN = re.compile(r"Starting PaddleOCR\.\.\.")
     STARTING_LENS_PATTERN = re.compile(r"Starting Google Lens CLI\.\.\.")
+    STARTING_LLM_PATTERN = re.compile(r"Starting LLM Vision recognition on (\d+) grid\(s\)\.\.\.")
     INFO_PASS_PATTERN = re.compile(r"Running Text-Detection-Only pass on (\d+) filtered frame\(s\) stitched into (\d+) image grid\(s\)\.\.\.")
     FILTERED_PATTERN = re.compile(r"Filtered out (\d+) redundant frame\(s\) via Text-Detection and tight-box SSIM analysis\.")
     GENERATING_SUBTITLES_PATTERN = re.compile(r"Generating subtitles\.\.\.")
@@ -1922,6 +1964,10 @@ def run_videocr(args_dict: dict[str, Any], window: sg.Window) -> bool:
                     gui_queue.put(('-VIDEOCR_OUTPUT-', LANG.get('cli_starting_lens', line) + '\n'))
                     gui_queue.put(('-PROGRESS-SMOOTH-', {'text': LANG.get('cli_starting_lens', line), 'percent': None}))
                     continue
+                if STARTING_LLM_PATTERN.search(line):
+                    gui_queue.put(('-VIDEOCR_OUTPUT-', LANG.get('cli_starting_llm', line) + '\n'))
+                    gui_queue.put(('-PROGRESS-SMOOTH-', {'text': LANG.get('cli_starting_llm', line), 'percent': None}))
+                    continue
                 if GENERATING_SUBTITLES_PATTERN.search(line):
                     gui_queue.put(('-VIDEOCR_OUTPUT-', LANG.get('cli_generating_subs', line) + '\n'))
                     gui_queue.put(('-PROGRESS-SMOOTH-', {'text': LANG.get('cli_generating_subs', line), 'percent': None}))
@@ -1959,105 +2005,6 @@ def run_videocr(args_dict: dict[str, Any], window: sg.Window) -> bool:
         gui_queue.put(('-VIDEOCR_OUTPUT-', error_msg.format(e)))
         return False
 
-
-def start_queue(window: sg.Window, queue_data: list[dict[str, Any]]) -> None:
-    """Common logic to start the batch processor."""
-    window.is_processing = True
-
-    pending_items = [j for j in queue_data if j['status'] == 'Pending']
-
-    if not pending_items:
-        return
-
-    for btn in ['-BTN-BATCH-START-', '-BTN-RUN-']:
-        window[btn].update(disabled=True)
-    window['-BTN-CANCEL-'].update(disabled=False)
-    window['-BTN-BATCH-STOP-'].update(disabled=False)
-    window['-BTN-BATCH-PAUSE-'].update(disabled=False, text=LANG.get('btn_pause', "Pause"))
-    window['-BTN-PAUSE-'].update(disabled=False, text=LANG.get('btn_pause', "Pause"))
-
-    window.cancelled_by_user = False
-    threading.Thread(target=run_batch_thread, args=(window, queue_data), daemon=True).start()
-
-
-def run_batch_thread(window: sg.Window, queue_data: list[dict[str, Any]]) -> None:
-    """Worker thread that dynamically pulls the next 'Pending' job from the queue."""
-    success_count = 0
-    last_processed_args = None
-
-    while True:
-        if getattr(window, 'cancelled_by_user', False):
-            break
-
-        current_job = next((j for j in queue_data if j['status'] == 'Pending'), None)
-
-        if not current_job:
-            break
-
-        current_job['status'] = 'Processing'
-        gui_queue.put(('-BATCH-REFRESH-', None))
-
-        args = current_job['args']
-        last_processed_args = args
-        processing_text = LANG.get('batch_processing_file', 'Processing')
-        header = f"{'=' * 10} {processing_text}: {os.path.basename(args['video_path'])} {'=' * 10}\n"
-        gui_queue.put(('-VIDEOCR_OUTPUT-', '\n'))
-        gui_queue.put(('-VIDEOCR_OUTPUT-', header))
-
-        success = run_videocr(args, window)
-
-        if getattr(window, 'cancelled_by_user', False):
-            current_job['status'] = 'Cancelled'
-        else:
-            if success:
-                current_job['status'] = 'Completed'
-                success_count += 1
-
-                gui_queue.put(('-VIDEOCR_OUTPUT-', '\n'))
-                gui_queue.put(('-VIDEOCR_OUTPUT-', LANG.get('status_success', "Successfully generated subtitle file!\n")))
-            else:
-                current_job['status'] = 'Error'
-
-        gui_queue.put(('-BATCH-REFRESH-', None))
-        time.sleep(0.1)
-
-    if not getattr(window, 'cancelled_by_user', False) and last_processed_args and success_count > 0:
-        if last_processed_args.get('send_notification', True):
-            notification_title = LANG.get('notification_title', "Your Subtitle generation is done!")
-            if success_count == 1:
-                msg = f"{os.path.basename(last_processed_args['output'])}"
-            else:
-                msg = LANG.get('batch_finished_count', "Batch finished: {} files processed.").format(success_count)
-            gui_queue.put(('-NOTIFICATION_EVENT-', {'title': notification_title, 'message': msg}))
-
-    gui_queue.put(('-BATCH-FINISHED-', None))
-
-
-def update_queue_tab_count(window: sg.Window, queue: list[dict[str, Any]]) -> None:
-    """Updates the Queue tab title. Counts Pending, Processing, Cancelled, Paused."""
-    active_count = len([j for j in queue if j['status'] in ('Pending', 'Processing', 'Cancelled', 'Paused')])
-
-    base_title = LANG.get('tab_batch', 'Queue')
-    if active_count > 0:
-        new_title = f"{base_title} ({active_count})"
-    else:
-        new_title = base_title
-
-    try:
-        window['-TABGROUP-'].Widget.tab(window['-TAB-BATCH-'].Widget, text=new_title)
-    except Exception as e:
-        log_error(f"Failed to update tab title: {e}")
-
-
-def refresh_batch_table(window: sg.Window) -> None:
-    """Refreshes the batch table with translated status text."""
-    data: list[list[str]] = []
-    for item in batch_queue:
-        display_status = get_translated_status(item['status'])
-        data.append([item['filename'], item['output'], display_status])
-
-    window['-BATCH-TABLE-'].update(values=data)
-    update_queue_tab_count(window, batch_queue)
 
 
 def set_process_pause_state(pid: int, pause: bool = True) -> bool:
@@ -2152,18 +2099,6 @@ def execute_post_completion_action(window: sg.Window, icon: str | bytes | None =
             ctypes.windll.user32.LockWorkStation()
 
 
-def update_run_and_cancel_button_state(window: sg.Window, queue: list[dict[str, Any]]) -> None:
-    """Updates the Run and Cancel button text based on whether there are PENDING items."""
-    has_pending = any(item['status'] == 'Pending' for item in queue)
-
-    if has_pending:
-        window['-BTN-RUN-'].update(text=LANG.get('btn_start_queue', "Start Queue"))
-        window['-BTN-CANCEL-'].update(text=LANG.get('btn_stop_queue', "Stop Queue"))
-    else:
-        window['-BTN-RUN-'].update(text=LANG.get('btn_run', 'Run'))
-        window['-BTN-CANCEL-'].update(text=LANG.get('btn_cancel', "Cancel"))
-
-
 def update_taskbar(state: str | None = None, progress: int | None = None) -> None:
     """Updates the taskbar progress and state, checking for OS support."""
     global previous_taskbar_state, prog
@@ -2256,6 +2191,90 @@ def VerticalStrut() -> sg.Element:
     )
 
 
+# --- Plugin Download Helpers ---
+def _refresh_plugin_status(window: sg.Window, values: dict[str, Any]) -> None:
+    """Refresh the plugin status display in the settings tab."""
+    if get_all_plugins_status is None:
+        window['-PLUGIN_STATUS-'].update("Plugin manager not available in this build.")
+        return
+
+    selected_engine = values.get('-OCR_ENGINE_COMBO-', DEFAULT_OCR_ENGINE)
+    if "Google Lens" in selected_engine:
+        engine_key = 'google_lens'
+    elif "LLM Vision" in selected_engine:
+        engine_key = 'llm_vision'
+    else:
+        engine_key = 'paddleocr'
+
+    plugins = get_all_plugins_status(engine_key)
+    lines: list[str] = []
+    for p in plugins:
+        status_icon = "[OK]" if p["installed"] else "[--]"
+        needed = " *" if p["needed_for_engine"] else ""
+        ver = f" ({p['version']})" if p["version"] and p["installed"] else ""
+        lines.append(f"{status_icon} {p['display_name']}{ver}{needed}")
+
+    lines.append("")
+    lines.append("* = required for current engine")
+    window['-PLUGIN_STATUS-'].update('\n'.join(lines))
+
+
+active_download_tasks: list[Any] = []
+
+
+def _start_plugin_download(window: sg.Window, values: dict[str, Any], engine_key: str) -> None:
+    """Start downloading missing plugins in a background thread."""
+    if PluginDownloadTask is None:
+        custom_popup(window, "Error", "Plugin manager not available in this build.", icon=ICON_PATH)
+        return
+
+    # Check extraction capability before starting download
+    try:
+        from videocr.plugin_manager import check_extraction_capability
+        can_extract, msg = check_extraction_capability()
+        if not can_extract:
+            custom_popup(window, "Extraction Error",
+                        f"Cannot extract downloaded files:\n{msg}\n\n"
+                        "Please install 7-Zip (https://7-zip.org) or run:\npip install py7zr",
+                        icon=ICON_PATH)
+            return
+    except ImportError:
+        pass
+
+    use_proxy = "gh-proxy" in values.get("-DL_SOURCE-", "")
+
+    if engine_key:
+        plugin_keys = [k for k, v in PLUGIN_REGISTRY.items() if engine_key in v["required_for"]]
+        plugin_keys = [k for k in plugin_keys if not check_plugin_status(k)["installed"]]
+    else:
+        plugin_keys = [k for k in PLUGIN_REGISTRY if not check_plugin_status(k)["installed"]]
+
+    if not plugin_keys:
+        window['-DL-PROGRESS-TEXT-'].update("All required components are already installed.")
+        return
+
+    window['-BTN-DL-MISSING-'].update(disabled=True)
+    window['-BTN-DL-ALL-'].update(disabled=True)
+
+    def _run_downloads() -> None:
+        for key in plugin_keys:
+            task = PluginDownloadTask(key, use_proxy=use_proxy)
+            active_download_tasks.append(task)
+
+            def _progress_callback(pk: str, prog: float, status: str) -> None:
+                window.write_event_value('-DL-PROGRESS-UPDATE-', (pk, prog, status))
+
+            task.run(progress_callback=_progress_callback)
+
+            if task.status == "error":
+                window.write_event_value('-DL-PROGRESS-UPDATE-', (key, 0, "error"))
+                break
+
+        window.write_event_value('-DL-DONE-', None)
+
+    threading.Thread(target=_run_downloads, daemon=True).start()
+
+
 # --- GUI Layout ---
 sg.theme("Darkgrey13")
 
@@ -2275,9 +2294,7 @@ tab1_content = [
         ], pad=(0, None)),
         sg.Column([
             [sg.Button("Open File...", key="-BTN-OPEN-FILE-"), sg.Button("Open Folder...", key="-BTN-OPEN-FOLDER-")],
-            [sg.Button('Save As...', key="-SAVE_AS_BTN-", disabled=True)],
-            [sg.Button("Info", key="-BTN-OCR-INFO-")],
-            [VerticalStrut()],
+            [sg.Button('Save As...', key="-SAVE_AS_BTN-", disabled=True), sg.Button("Info", key="-BTN-OCR-INFO-")],
             [sg.Push(), sg.Button("How to Use", key="-BTN-HELP-")],
         ], pad=(0, None), expand_x=True)
     ],
@@ -2293,8 +2310,6 @@ tab1_content = [
      sg.Button("Pause", key="-BTN-PAUSE-", disabled=True),
      sg.Button("Cancel", key="-BTN-CANCEL-", disabled=True),
      sg.Button("Clear Crop", key="-BTN-CLEAR_CROP-", disabled=True)],
-    [sg.Button("Add to Queue", key="-BTN-ADD-BATCH-"),
-     sg.Button("Add All to Queue", key="-BTN-BATCH-ADD-ALL-")],
     [sg.Text("Progress Info:", key='-LBL-PROGRESS-')],
     [
         sg.Text("", key="-STATUS-LINE-", size=(None, 1), expand_x=True),
@@ -2315,97 +2330,120 @@ tab1_layout = [[sg.Column(tab1_content,
                            expand_x=True,
                            expand_y=True)]]
 
-# -- Tab Batch: Queue Management --
-tab_batch_content = [
-    [sg.Text("Queue", font=("Arial", scale_font_size(12), "bold"), key='-LBL-QUEUE-TITLE-')],
-    [sg.Table(values=[], headings=['Video File', 'Output File', 'Status'], key='-BATCH-TABLE-',
-              col_widths=[25, 25, 15], auto_size_columns=False, justification='left',
-              expand_x=True, expand_y=True, enable_events=True, select_mode=sg.TABLE_SELECT_MODE_EXTENDED)],
-
-    [sg.Button("Start Queue", key="-BTN-BATCH-START-"),
-     sg.Button("Stop Queue", key="-BTN-BATCH-STOP-", disabled=True),
-     sg.Button("Pause", key="-BTN-BATCH-PAUSE-", disabled=True)],
-    [sg.Button("▲", key="-BTN-BATCH-UP-", size=(3, 1)),
-     sg.Button("▼", key="-BTN-BATCH-DOWN-", size=(3, 1)),
-     sg.VerticalSeparator(),
-     sg.Button("Reset", key="-BTN-BATCH-RESET-"),
-     sg.Button("Edit", key="-BTN-BATCH-EDIT-"),
-     sg.Button("Remove", key="-BTN-BATCH-REMOVE-"),
-     sg.Button("Clear Queue", key="-BTN-BATCH-CLEAR-")]
-]
-tab_batch_layout = [[sg.Column(tab_batch_content, expand_x=True, expand_y=True)]]
 
 tab2_content = [
-    [sg.Text("OCR Settings:", font=("Arial", scale_font_size(10), "bold"), key='-LBL-OCR_SETTINGS-')],
-    [sg.Text("Start Time (e.g., 0:00 or 1:23:45):", size=(38, 1), key='-LBL-TIME_START-'),
-     sg.Input(DEFAULT_TIME_START, key="--time_start", size=(15, 1), enable_events=True)],
-    [sg.Text("End Time (e.g., 0:10 or 2:34:56):", size=(38, 1), key='-LBL-TIME_END-'),
-     sg.Input("", key="--time_end", size=(15, 1), enable_events=True)],
-    [sg.Text("Confidence Threshold (0-100):", size=(38, 1), key='-LBL-CONF_THRESHOLD-'),
-     sg.Input(DEFAULT_CONF_THRESHOLD, key="--conf_threshold", size=(10, 1), enable_events=True)],
-    [sg.Text("Similarity Threshold (0-100):", size=(38, 1), key='-LBL-SIM_THRESHOLD-'),
-     sg.Input(DEFAULT_SIM_THRESHOLD, key="--sim_threshold", size=(10, 1), enable_events=True)],
-    [sg.Text("Max Merge Gap (seconds):", size=(38, 1), key='-LBL-MERGE_GAP-'),
-     sg.Input(DEFAULT_MAX_MERGE_GAP, key="--max_merge_gap", size=(10, 1), enable_events=True)],
-    [sg.Text("Brightness Threshold (0-255):", size=(38, 1), key='-LBL-BRIGHTNESS-'),
-     sg.Input("", key="--brightness_threshold", size=(10, 1), enable_events=True)],
-    [sg.Text("SSIM Threshold (0-100):", size=(38, 1), key='-LBL-SSIM-'),
-     sg.Input(DEFAULT_SSIM_THRESHOLD, key="--ssim_threshold", size=(10, 1), enable_events=True)],
-    [sg.Text("Max OCR Image Width (pixel):", size=(38, 1), key='-LBL-OCR_WIDTH-'),
-     sg.Input(DEFAULT_OCR_IMAGE_MAX_WIDTH, key="--ocr_image_max_width", size=(10, 1), enable_events=True)],
-    [sg.Text("Frames to Skip:", size=(38, 1), key='-LBL-FRAMES_SKIP-'),
-     sg.Input(DEFAULT_FRAMES_TO_SKIP, key="--frames_to_skip", size=(10, 1), enable_events=True)],
-    [sg.Text("Minimum Subtitle Duration (seconds):", size=(38, 1), key='-LBL-MIN_DURATION-'),
-     sg.Input(DEFAULT_MIN_SUBTITLE_DURATION, key="--min_subtitle_duration", size=(10, 1), enable_events=True)],
-    [sg.Checkbox("Enable GPU Usage", default=True, key="--use_gpu", enable_events=True)],
-    [sg.Checkbox("Use Full Frame OCR", default=False, key="--use_fullframe", enable_events=True)],
-    [sg.Checkbox("Enable Dual Zone OCR", default=False, key="--use_dual_zone", enable_events=True)],
-    [sg.Checkbox("Enable Subtitle Alignment", default=False, key="enable_subtitle_alignment", enable_events=True)],
-    [sg.Text("Zone 1 Alignment:", size=(38, 1), key='-LBL-SUBTITLE-ALIGNMENT-'),
-     sg.Combo([], key="--subtitle_alignment", size=(15, 1), readonly=True, enable_events=True, disabled=True)],
-    [sg.Text("Zone 2 Alignment:", size=(38, 1), key='-LBL-SUBTITLE-ALIGNMENT2-'),
-     sg.Combo([], key="--subtitle_alignment2", size=(15, 1), readonly=True, enable_events=True, disabled=True)],
-    [sg.Checkbox("Enable Angle Classification", default=False, key="--use_angle_cls", enable_events=True)],
-    [sg.Checkbox("Enable Post Processing", default=False, key="--post_processing", enable_events=True)],
-    [sg.Checkbox("Normalize Traditional to Simplified Chinese", default=True, key="--normalize_to_simplified_chinese", enable_events=True)],
-    [sg.Checkbox("Use Server Model", default=False, key="--use_server_model", enable_events=True)],
-    [sg.HorizontalSeparator()],
-    [sg.Text("VideOCR Settings:", font=("Arial", scale_font_size(10), "bold"), key='-LBL-VIDEOCR_SETTINGS-')],
     [
         sg.Column([
-            [sg.Text("UI Language:", size=(30, 1), key='-LBL-UI_LANG-'), VerticalStrut()],
-            [sg.Text("GUI Scaling:", size=(30, 1), key='-LBL-GUI_SCALING-'), VerticalStrut()],
-            [sg.Checkbox("Save Crop Box Selection", default=True, key="--save_crop_box", enable_events=True), VerticalStrut()],
-            [sg.Checkbox("Save SRT in Video Directory", default=True, key="--save_in_video_dir", enable_events=True), VerticalStrut()],
-            [sg.Text("Output Directory:", size=(30, 1), key='-LBL-OUTPUT_DIR-'), VerticalStrut()],
-            [sg.Text("Keyboard Seek Step (seconds):", size=(30, 1), key='-LBL-SEEK_STEP-'), VerticalStrut()],
-            [sg.Checkbox("Send Notification", default=True, key="--send_notification", enable_events=True), VerticalStrut()],
-            [sg.Checkbox("Prevent System Sleep", default=True, key="prevent_system_sleep", enable_events=True), VerticalStrut()],
-            [sg.Checkbox("Check for Updates On Startup", default=True, key="--check_for_updates", enable_events=True), VerticalStrut()],
-        ], pad=(0, None)),
+            [sg.Frame("OCR Settings", [
+                [sg.Text("Start Time (e.g., 0:00 or 1:23:45):", size=(35, 1), key='-LBL-TIME_START-'),
+                 sg.Input(DEFAULT_TIME_START, key="--time_start", size=(15, 1), enable_events=True)],
+                [sg.Text("End Time (e.g., 0:10 or 2:34:56):", size=(35, 1), key='-LBL-TIME_END-'),
+                 sg.Input("", key="--time_end", size=(15, 1), enable_events=True)],
+                [sg.Text("Confidence Threshold (0-100):", size=(35, 1), key='-LBL-CONF_THRESHOLD-'),
+                 sg.Input(DEFAULT_CONF_THRESHOLD, key="--conf_threshold", size=(10, 1), enable_events=True)],
+                [sg.Text("Similarity Threshold (0-100):", size=(35, 1), key='-LBL-SIM_THRESHOLD-'),
+                 sg.Input(DEFAULT_SIM_THRESHOLD, key="--sim_threshold", size=(10, 1), enable_events=True)],
+                [sg.Text("Max Merge Gap (seconds):", size=(35, 1), key='-LBL-MERGE_GAP-'),
+                 sg.Input(DEFAULT_MAX_MERGE_GAP, key="--max_merge_gap", size=(10, 1), enable_events=True)],
+                [sg.Text("Brightness Threshold (0-255):", size=(35, 1), key='-LBL-BRIGHTNESS-'),
+                 sg.Input("", key="--brightness_threshold", size=(10, 1), enable_events=True)],
+                [sg.Text("SSIM Threshold (0-100):", size=(35, 1), key='-LBL-SSIM-'),
+                 sg.Input(DEFAULT_SSIM_THRESHOLD, key="--ssim_threshold", size=(10, 1), enable_events=True)],
+                [sg.Text("Max OCR Image Width (pixel):", size=(35, 1), key='-LBL-OCR_WIDTH-'),
+                 sg.Input(DEFAULT_OCR_IMAGE_MAX_WIDTH, key="--ocr_image_max_width", size=(10, 1), enable_events=True)],
+                [sg.Text("Frames to Skip:", size=(35, 1), key='-LBL-FRAMES_SKIP-'),
+                 sg.Input(DEFAULT_FRAMES_TO_SKIP, key="--frames_to_skip", size=(10, 1), enable_events=True)],
+                [sg.Text("Minimum Subtitle Duration (seconds):", size=(35, 1), key='-LBL-MIN_DURATION-'),
+                 sg.Input(DEFAULT_MIN_SUBTITLE_DURATION, key="--min_subtitle_duration", size=(10, 1), enable_events=True)],
+            ], expand_x=True, pad=(0, 5))],
+        ], pad=(0, 0), expand_x=True, vertical_alignment='top'),
         sg.Column([
-            [sg.Combo(ui_language_display_names, key='-UI_LANG_COMBO-', size=(32, 1), readonly=True, enable_events=True, expand_x=True), VerticalStrut()],
-            [sg.Combo([], key='gui_scaling', size=(32, 1), readonly=True, enable_events=True, expand_x=True), VerticalStrut()],
-            [VerticalStrut()],
-            [VerticalStrut()],
-            [sg.Input(DEFAULT_DOCUMENTS_DIR, key="--default_output_dir", disabled_readonly_background_color=sg.theme_input_background_color(), readonly=True, size=(34, 1), enable_events=True), VerticalStrut()],
-            [sg.Input(KEY_SEEK_STEP, key="--keyboard_seek_step", size=(10, 1), enable_events=True), VerticalStrut()],
-            [VerticalStrut()],
-            [VerticalStrut()],
-            [sg.Button("Check Now", key="-BTN-CHECK_UPDATE_MANUAL-")],
-        ], pad=(0, None)),
+            [sg.Frame("LLM Vision Settings", [
+                [sg.Text("API Key:", size=(15, 1), key='-LBL-LLM_API_KEY-'),
+                 sg.Input("", key="--llm_api_key", size=(30, 1), password_char='*', enable_events=True, expand_x=True)],
+                [sg.Text("API Base URL:", size=(15, 1), key='-LBL-LLM_API_BASE-'),
+                 sg.Input("", key="--llm_api_base", size=(30, 1), enable_events=True, expand_x=True)],
+                [sg.Text("Model Name:", size=(15, 1), key='-LBL-LLM_MODEL-'),
+                 sg.Input("", key="--llm_model", size=(30, 1), enable_events=True, expand_x=True)],
+                [sg.Text("Concurrency (1-32):", size=(15, 1), key='-LBL-LLM_CONCURRENCY-'),
+                 sg.Input("4", key="--llm_concurrency", size=(10, 1), enable_events=True)],
+                [sg.Checkbox("Disable Inference Mode (reasoning/thinking)", default=False, key="--llm_disable_inference", enable_events=True)],
+                [sg.Text("Image Quality (50-100):", size=(20, 1), key='-LBL-LLM_IMAGE_QUALITY-'),
+                 sg.Input("75", key="--llm_image_quality", size=(10, 1), enable_events=True)],
+                [sg.Text("Preset:", size=(15, 1)),
+                 sg.Combo(["Custom"], default_value="Custom", key="-LLM_PRESET-", size=(20, 1), readonly=True, enable_events=True),
+                 sg.Button("Save", key="-BTN-LLM-PRESET-SAVE-", size=(6, 1)),
+                 sg.Button("Delete", key="-BTN-LLM-PRESET-DELETE-", size=(6, 1))],
+            ], expand_x=True, pad=(0, 5))],
+        ], pad=(0, 0), expand_x=True, vertical_alignment='top'),
+    ],
+    [
         sg.Column([
-            [VerticalStrut()],
-            [VerticalStrut()],
-            [VerticalStrut()],
-            [VerticalStrut()],
-            [sg.Button("Open Folder...", key="-BTN-FOLDER_BROWSE-", disabled=True)],
-            [VerticalStrut()],
-            [VerticalStrut()],
-            [VerticalStrut()],
-            [VerticalStrut()],
-        ], pad=(0, None), expand_x=True),
-    ]
+            [sg.Frame("Processing Options", [
+                [sg.Checkbox("Enable GPU Usage", default=True, key="--use_gpu", enable_events=True, size=(25, 1)),
+                 sg.Checkbox("Use Full Frame OCR", default=False, key="--use_fullframe", enable_events=True, size=(25, 1))],
+                [sg.Checkbox("Enable Dual Zone OCR", default=False, key="--use_dual_zone", enable_events=True, size=(25, 1)),
+                 sg.Checkbox("Enable Angle Classification", default=False, key="--use_angle_cls", enable_events=True, size=(25, 1))],
+                [sg.Checkbox("Enable Post Processing", default=False, key="--post_processing", enable_events=True, size=(25, 1)),
+                 sg.Checkbox("Normalize Traditional to Simplified Chinese", default=True, key="--normalize_to_simplified_chinese", enable_events=True)],
+                [sg.Checkbox("Use Server Model", default=False, key="--use_server_model", enable_events=True, size=(25, 1)),
+                 sg.Checkbox("Enable Subtitle Alignment", default=False, key="enable_subtitle_alignment", enable_events=True)],
+                [sg.Text("Zone 1 Alignment:", size=(25, 1), key='-LBL-SUBTITLE-ALIGNMENT-'),
+                 sg.Combo([], key="--subtitle_alignment", size=(15, 1), readonly=True, enable_events=True, disabled=True)],
+                [sg.Text("Zone 2 Alignment:", size=(25, 1), key='-LBL-SUBTITLE-ALIGNMENT2-'),
+                 sg.Combo([], key="--subtitle_alignment2", size=(15, 1), readonly=True, enable_events=True, disabled=True)],
+            ], expand_x=True, pad=(0, 5))],
+        ], pad=(0, 0), expand_x=True, vertical_alignment='top'),
+        sg.Column([
+            [sg.Frame("Component Downloads", [
+                [sg.Text("Download source:", size=(18, 1), key='-LBL-DL_SOURCE-'),
+                 sg.Combo(["GitHub (direct)", "gh-proxy.com (China)"], default_value="GitHub (direct)", key="-DL_SOURCE-", size=(25, 1), readonly=True),
+                 sg.Button("Refresh", key="-BTN-REFRESH-PLUGINS-", size=(8, 1))],
+                [sg.Multiline("", key="-PLUGIN_STATUS-", size=(58, 6), disabled=True, autoscroll=False, font=("Consolas", 9))],
+                [sg.Button("Download Missing (for current engine)", key="-BTN-DL-MISSING-", size=(32, 1)),
+                 sg.Button("Download All", key="-BTN-DL-ALL-", size=(12, 1))],
+                [sg.Text("", key="-DL-PROGRESS-TEXT-", size=(50, 1))],
+                [sg.ProgressBar(100, orientation='h', size=(40, 12), key='-DL-PROGRESS-BAR-', visible=False)],
+            ], expand_x=True, pad=(0, 5))],
+        ], pad=(0, 0), expand_x=True, vertical_alignment='top'),
+    ],
+    [sg.Frame("Application Settings", [
+        [
+            sg.Column([
+                [sg.Text("UI Language:", size=(30, 1), key='-LBL-UI_LANG-'), VerticalStrut()],
+                [sg.Text("GUI Scaling:", size=(30, 1), key='-LBL-GUI_SCALING-'), VerticalStrut()],
+                [sg.Checkbox("Save Crop Box Selection", default=True, key="--save_crop_box", enable_events=True), VerticalStrut()],
+                [sg.Checkbox("Save SRT in Video Directory", default=True, key="--save_in_video_dir", enable_events=True), VerticalStrut()],
+                [sg.Text("Output Directory:", size=(30, 1), key='-LBL-OUTPUT_DIR-'), VerticalStrut()],
+                [sg.Text("Keyboard Seek Step (seconds):", size=(30, 1), key='-LBL-SEEK_STEP-'), VerticalStrut()],
+                [sg.Checkbox("Send Notification", default=True, key="--send_notification", enable_events=True), VerticalStrut()],
+                [sg.Checkbox("Prevent System Sleep", default=True, key="prevent_system_sleep", enable_events=True), VerticalStrut()],
+                [sg.Checkbox("Check for Updates On Startup", default=True, key="--check_for_updates", enable_events=True), VerticalStrut()],
+            ], pad=(0, None)),
+            sg.Column([
+                [sg.Combo(ui_language_display_names, key='-UI_LANG_COMBO-', size=(32, 1), readonly=True, enable_events=True, expand_x=True), VerticalStrut()],
+                [sg.Combo([], key='gui_scaling', size=(32, 1), readonly=True, enable_events=True, expand_x=True), VerticalStrut()],
+                [VerticalStrut()],
+                [VerticalStrut()],
+                [sg.Input(DEFAULT_DOCUMENTS_DIR, key="--default_output_dir", disabled_readonly_background_color=sg.theme_input_background_color(), readonly=True, size=(34, 1), enable_events=True), VerticalStrut()],
+                [sg.Input(KEY_SEEK_STEP, key="--keyboard_seek_step", size=(10, 1), enable_events=True), VerticalStrut()],
+                [VerticalStrut()],
+                [VerticalStrut()],
+                [sg.Button("Check Now", key="-BTN-CHECK_UPDATE_MANUAL-")],
+            ], pad=(0, None)),
+            sg.Column([
+                [VerticalStrut()],
+                [VerticalStrut()],
+                [VerticalStrut()],
+                [VerticalStrut()],
+                [sg.Button("Open Folder...", key="-BTN-FOLDER_BROWSE-", disabled=True)],
+                [VerticalStrut()],
+                [VerticalStrut()],
+                [VerticalStrut()],
+                [VerticalStrut()],
+            ], pad=(0, None), expand_x=True),
+        ]
+    ], expand_x=True, pad=(0, 5))],
 ]
 tab2_layout = [[sg.Column(tab2_content,
                            key='-TAB2_COL-',
@@ -2422,10 +2460,10 @@ tab3_layout = [
         [sg.Text(f"Version: {PROGRAM_VERSION}", font=("Arial", scale_font_size(11)), key='-LBL-ABOUT_VERSION-')],
         [sg.Text("")],
         [sg.Text("Get the newest version here:", font=("Arial", scale_font_size(11)), key='-LBL-GET_NEWEST-')],
-        [sg.Text("https://github.com/timminator/VideOCR/releases", font=("Arial", scale_font_size(11), 'underline'), enable_events=True, key="-GITHUB_RELEASES_LINK-")],
+        [sg.Text("https://github.com/kiriya55/VideOCRplus/releases", font=("Arial", scale_font_size(11), 'underline'), enable_events=True, key="-GITHUB_RELEASES_LINK-")],
         [sg.Text("")],
         [sg.Text("Found a bug or have a suggestion? Feel free to open an issue at:", font=("Arial", scale_font_size(11)), key='-LBL-BUG_REPORT-')],
-        [sg.Text("https://github.com/timminator/VideOCR/issues", font=("Arial", scale_font_size(11), 'underline'), enable_events=True, key="-GITHUB_ISSUES_LINK-")],
+        [sg.Text("https://github.com/kiriya55/VideOCRplus/issues", font=("Arial", scale_font_size(11), 'underline'), enable_events=True, key="-GITHUB_ISSUES_LINK-")],
         [sg.Text("")],
         [sg.HorizontalSeparator()],
     ], element_justification='c', expand_x=True, expand_y=True)]
@@ -2434,7 +2472,6 @@ tab3_layout = [
 layout = [
     [sg.TabGroup([
         [sg.Tab('Process Video', tab1_layout, key='-TAB-VIDEO-'),
-         sg.Tab('Queue', tab_batch_layout, key='-TAB-BATCH-'),
          sg.Tab('Advanced Settings', tab2_layout, key='-TAB-ADVANCED-'),
          sg.Tab('About', tab3_layout, key='-TAB-ABOUT-')]
     ], key='-TABGROUP-', enable_events=True, expand_x=True, expand_y=True)]
@@ -2696,14 +2733,7 @@ window.bind('<Right>', '-GRAPH-<Right>')
 # --- Bind window restore event ---
 window.bind('<Map>', '-WINDOW_RESTORED-')
 
-# --- Track selection and bind keys to batch table ---
-window.batch_anchor = None
-window.batch_focus = None
 window.last_selection = []
-window.ignore_table_event = False
-
-window['-BATCH-TABLE-'].bind('<Shift-KeyPress-Down>', '-SHIFT-DOWN')
-window['-BATCH-TABLE-'].bind('<Shift-KeyPress-Up>', '-SHIFT-UP')
 
 
 # --- Failsafe for PySimpleGUI's overwrite event bug (-Graph-+UP with -GRAPH-+MOVE) on fast movements---
@@ -2816,9 +2846,6 @@ while True:
 
                 if msg_event == '-PROCESS_STARTED-':
                     window._videocr_process_pid = msg_data
-                    window['-BTN-RUN-'].update(disabled=True)
-                    window['-BTN-CANCEL-'].update(disabled=False)
-                    window['-BTN-BATCH-STOP-'].update(disabled=False)
 
                 elif msg_event == '-PROGRESS-SMOOTH-':
                     if msg_data.get('text'):
@@ -2843,26 +2870,19 @@ while True:
                 elif msg_event == '-NOTIFICATION_EVENT-':
                     send_notification(msg_data['title'], msg_data['message'])
 
-                elif msg_event == '-BATCH-REFRESH-':
-                    refresh_batch_table(window)
-
-                elif msg_event == '-BATCH-FINISHED-':
+                elif msg_event == '-PROCESS-FINISHED-':
                     window.is_processing = False
                     set_system_awake(False)
 
-                    for btn in ['-BTN-BATCH-START-', '-BTN-RUN-']:
-                        window[btn].update(disabled=False)
-
-                    window['-BTN-BATCH-PAUSE-'].update(disabled=True, text=LANG.get('btn_pause', "Pause"))
+                    window['-BTN-RUN-'].update(disabled=False)
                     window['-BTN-PAUSE-'].update(disabled=True, text=LANG.get('btn_pause', "Pause"))
                     window['-BTN-CANCEL-'].update(disabled=True)
-                    window['-BTN-BATCH-STOP-'].update(disabled=True)
                     window['-SAVE_AS_BTN-'].update(disabled=not video_path)
                     window['--output'].update(disabled=not video_path)
                     window['-PROGRESS-BAR-'].update(0)
                     window['-STATUS-LINE-'].update("")
                     window['-ETA-LINE-'].update("")
-                    msg = LANG.get('status_queue_cancelled', "Queue Cancelled") if getattr(window, 'cancelled_by_user', False) else LANG.get('status_queue_finished', "Queue Finished")
+                    msg = LANG.get('status_cancelled', "Cancelled") if getattr(window, 'cancelled_by_user', False) else LANG.get('status_success', "Done")
                     window['-OUTPUT-'].update('\n', append=True)
                     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
                     window['-OUTPUT-'].update(f"[{timestamp}] {msg}\n", append=True)
@@ -2871,7 +2891,6 @@ while True:
                         del window._videocr_process_pid
 
                     update_taskbar(state='normal', progress=0)
-                    update_run_and_cancel_button_state(window, batch_queue)
                     execute_post_completion_action(window, icon=ICON_PATH)
 
                     if hasattr(window, 'cancelled_by_user'):
@@ -2969,6 +2988,8 @@ while True:
 
             if "Google Lens" in selected_engine:
                 new_values = lens_display_names
+            elif "LLM Vision" in selected_engine:
+                new_values = paddle_display_names  # LLM Vision uses same lang list as PaddleOCR
             else:
                 new_values = paddle_display_names
 
@@ -2982,6 +3003,7 @@ while True:
             if video_path:
                 window.write_event_value('-LANG_COMBO-', new_value)
 
+            _refresh_plugin_status(window, values)
             save_settings(window, values)
 
     if event == sg.WIN_CLOSED:
@@ -3075,14 +3097,115 @@ while True:
         custom_popup(window, LANG.get('engine_info', "OCR Engine Information"), LANG.get('engine_message', (
             "PaddleOCR (Det. + Rec.):\n"
             "• 100% local processing.\n"
-            "• Both text detection and recognition are done locally.\n\n"
+            "• Both text detection and recognition are done locally.\n"
+            "• Best for offline use with good accuracy.\n\n"
             "PaddleOCR (Det.) + Google Lens (Rec.):\n"
             "• Hybrid processing.\n"
             "• PaddleOCR handles text detection locally.\n"
             "• Google Lens (online) handles text recognition.\n"
-            "• Requires an active internet connection.")),
+            "• Requires an active internet connection.\n\n"
+            "PaddleOCR (Det.) + LLM Vision (Rec.):\n"
+            "• Hybrid processing.\n"
+            "• PaddleOCR handles text detection locally.\n"
+            "• A Vision LLM handles text recognition.\n"
+            "• SSIM deduplication reduces frames before LLM processing.\n"
+            "• Each SSIM batch is sent as one representative frame in a grid.\n"
+            "• Requires an API key and internet connection.\n"
+            "• Configure API settings in the Settings tab.\n"
+            "• Supports OpenAI, Anthropic, and compatible APIs.")),
             icon=ICON_PATH
         )
+
+    elif event == '-BTN-REFRESH-PLUGINS-':
+        _refresh_plugin_status(window, values)
+
+    elif event == '-BTN-DL-MISSING-':
+        selected_engine = values.get('-OCR_ENGINE_COMBO-', DEFAULT_OCR_ENGINE)
+        if "Google Lens" in selected_engine:
+            engine_key = 'google_lens'
+        elif "LLM Vision" in selected_engine:
+            engine_key = 'llm_vision'
+        else:
+            engine_key = 'paddleocr'
+        _start_plugin_download(window, values, engine_key)
+
+    elif event == '-BTN-DL-ALL-':
+        _start_plugin_download(window, values, "")
+
+    elif event == '-DL-PROGRESS-UPDATE-':
+        plugin_key, progress, status = values[event]
+        if status == "downloading":
+            window['-DL-PROGRESS-BAR-'].update(visible=True)
+            window['-DL-PROGRESS-BAR-'].update_bar(int(progress * 100))
+            window['-DL-PROGRESS-TEXT-'].update(f"Downloading {plugin_key}... {progress*100:.0f}%")
+        elif status == "extracting":
+            window['-DL-PROGRESS-BAR-'].update(visible=True)
+            window['-DL-PROGRESS-BAR-'].update_bar(90)
+            window['-DL-PROGRESS-TEXT-'].update(f"Extracting {plugin_key}...")
+        elif status == "done":
+            window['-DL-PROGRESS-BAR-'].update(visible=False)
+            window['-DL-PROGRESS-TEXT-'].update(f"{plugin_key}: Download complete!")
+            _refresh_plugin_status(window, values)
+        elif status == "error":
+            window['-DL-PROGRESS-BAR-'].update(visible=False)
+            # Find the task to get the error message
+            error_msg = "Unknown error"
+            for task in active_download_tasks:
+                if task.plugin_key == plugin_key and task.error_message:
+                    error_msg = task.error_message
+                    break
+            window['-DL-PROGRESS-TEXT-'].update(f"Error downloading {plugin_key}")
+            custom_popup(window, "Download Error", f"Failed to download {plugin_key}:\n\n{error_msg}", icon=ICON_PATH)
+        elif status in ("cancelled", "querying"):
+            window['-DL-PROGRESS-TEXT-'].update(f"Status: {status}")
+
+    elif event == '-DL-DONE-':
+        window['-BTN-DL-MISSING-'].update(disabled=False)
+        window['-BTN-DL-ALL-'].update(disabled=False)
+        window['-DL-PROGRESS-BAR-'].update(visible=False)
+        _refresh_plugin_status(window, values)
+
+    # --- LLM Preset Events ---
+    elif event == '-LLM_PRESET-':
+        preset_name = values['-LLM_PRESET-']
+        if preset_name != "Custom":
+            presets = load_llm_presets()
+            if preset_name in presets:
+                preset = presets[preset_name]
+                window['--llm_api_key'].update(preset.get('api_key', ''))
+                window['--llm_api_base'].update(preset.get('api_base', ''))
+                window['--llm_model'].update(preset.get('model', ''))
+                window['--llm_concurrency'].update(preset.get('concurrency', '4'))
+                window['--llm_disable_inference'].update(preset.get('disable_inference', False))
+                window['--llm_image_quality'].update(preset.get('image_quality', '75'))
+
+    elif event == '-BTN-LLM-PRESET-SAVE-':
+        preset_name = sg.popup_get_text(
+            "Enter preset name:", title="Save LLM Preset",
+            default_text=""
+        )
+        if preset_name and preset_name.strip():
+            preset_name = preset_name.strip()
+            presets = load_llm_presets()
+            presets[preset_name] = {
+                'api_key': values.get('--llm_api_key', ''),
+                'api_base': values.get('--llm_api_base', ''),
+                'model': values.get('--llm_model', ''),
+                'concurrency': values.get('--llm_concurrency', '4'),
+                'disable_inference': values.get('--llm_disable_inference', False),
+                'image_quality': values.get('--llm_image_quality', '75'),
+            }
+            save_llm_presets(presets)
+            window['-LLM_PRESET-'].update(values=get_llm_preset_names(), value=preset_name)
+
+    elif event == '-BTN-LLM-PRESET-DELETE-':
+        preset_name = values['-LLM_PRESET-']
+        if preset_name != "Custom":
+            presets = load_llm_presets()
+            if preset_name in presets:
+                del presets[preset_name]
+                save_llm_presets(presets)
+                window['-LLM_PRESET-'].update(values=get_llm_preset_names(), value="Custom")
 
     elif event == '-NEW_VERSION_FOUND-':
         update_popup(
@@ -3116,10 +3239,10 @@ while True:
         )
 
     elif event == "-GITHUB_ISSUES_LINK-":
-        webbrowser.open("https://github.com/timminator/VideOCR/issues")
+        webbrowser.open("https://github.com/kiriya55/VideOCRplus/issues")
 
     elif event == "-GITHUB_RELEASES_LINK-":
-        webbrowser.open("https://github.com/timminator/VideOCR/releases")
+        webbrowser.open("https://github.com/kiriya55/VideOCRplus/releases")
 
     elif event == '-SAVE_AS_BTN-':
         output_path = values["--output"]
@@ -3481,202 +3604,45 @@ while True:
             window['-GRAPH-'].Widget.config(cursor=cursor)
             window.hover_state = {'idx': hit_idx, 'edge': edge} if hit_idx is not None else None
 
-    elif event == "-BTN-ADD-BATCH-":
+    elif event == "-BTN-RUN-":
         if not video_path:
+            continue
+
+        if hasattr(window, '_videocr_process_pid') and window._videocr_process_pid:
+            window['-OUTPUT-'].update(LANG.get('error_already_running', "Process is already running.\n"), append=True)
             continue
 
         args, errors = get_processing_args(values, window)
         if errors or args is None:
-            errors_to_display = errors if errors is not None else []
-            custom_popup(window, "Validation Error", "\n".join(errors_to_display), icon=ICON_PATH)
+            errors_to_display = errors if errors is not None else ["Unknown validation error"]
+            window['-OUTPUT-'].update(LANG.get('val_err_header', "Validation Errors:\n"), append=True)
+            for error in errors_to_display:
+                window['-OUTPUT-'].update(f"- {error}\n", append=True)
+            window.refresh()
             continue
 
-        target_output_full = args['output']
-        existing_job_index = -1
-
-        for idx, job in enumerate(batch_queue):
-            if job['args']['output'] == target_output_full:
-                existing_job_index = idx
-                break
-
-        should_create_new = True
-
-        if existing_job_index != -1:
-            existing_status = batch_queue[existing_job_index]['status']
-
-            if existing_status in ('Cancelled', 'Error', 'Completed', 'Pending'):
-                display_status = get_translated_status(existing_status)
-                msg = LANG.get('popup_duplicate_msg', "A job for this output file already exists (Status: {}).\n\nDo you want to update/restart it with current settings?").format(display_status)
-                choice = custom_popup_yes_no(window, LANG.get('title_duplicate_job', "Duplicate Job"), msg, icon=ICON_PATH)
-
-                if choice == 'Yes':
-                    batch_queue[existing_job_index]['args'] = args
-                    batch_queue[existing_job_index]['status'] = 'Pending'
-                    should_create_new = False
-                else:
-                    continue
-
-            elif existing_status in ('Processing', 'Paused'):
-                display_status = get_translated_status(existing_status)
-                msg = LANG.get('msg_duplicate_queue_running', "A job for '{}' is currently active (Status: {}).\n\nPlease change the output path or wait for it to finish.").format(os.path.basename(target_output_full), display_status)
-                custom_popup(window, LANG.get('title_duplicate', "Duplicate"), msg, icon=ICON_PATH)
-                continue
-
-        if should_create_new:
-            batch_queue.append({
-                'filename': os.path.basename(args['video_path']),
-                'output': os.path.basename(target_output_full),
-                'status': 'Pending',
-                'args': args
-            })
-
-        refresh_batch_table(window)
-        update_run_and_cancel_button_state(window, batch_queue)
-
-    elif event == "-BTN-BATCH-ADD-ALL-":
-        all_videos = window['-VIDEO-LIST-'].Values
-        if not all_videos:
-            continue
-
-        original_duration_ms = video_duration_ms
-
-        added_count = 0
-        skipped_videos: list[str] = []
-
-        current_queue_outputs = {j['args']['output'] for j in batch_queue}
-
-        init_text = LANG.get('msg_scanning_init', "Initializing scan...")
-        prog_layout = [[sg.Text(init_text, key='-TXT-', text_color='white', background_color='#2d2d2d', font=("Arial", scale_font_size(12)), pad=(20, 20))]]
-        progress_window = sg.Window(LANG.get('title_progress', "Progress"), prog_layout, no_titlebar=True, keep_on_top=True, background_color='#2d2d2d', finalize=True, modal=True)
-        center_popup(window, progress_window)
-
-        for index, v_path in enumerate(all_videos):
-            progress_window['-TXT-'].update(LANG.get('msg_scanning_file', "Scanning file {} of {}...").format(index + 1, len(all_videos)))
-            progress_window.refresh()
-
-            potential_output = generate_output_path(v_path, values)
-            potential_output_str = str(potential_output)
-
-            if potential_output_str in current_queue_outputs:
-                skipped_videos.append(f"{os.path.basename(v_path)} ({LANG.get('reason_dup_path', 'Duplicate Output path')})")
-                continue
-
-            _, _, duration_ms = video_manager.open(v_path).values()
-            if duration_ms <= 0:
-                skipped_videos.append(f"{os.path.basename(v_path)} ({LANG.get('reason_metadata', 'Metadata Error')})")
-                continue
-
-            video_duration_ms = duration_ms
-
-            args, errors = get_processing_args(values, window)
-            if errors or args is None:
-                errors_to_display = errors if errors is not None else []
-                skipped_videos.append(f"{os.path.basename(v_path)}: {errors_to_display[0]}")
-                continue
-
-            is_valid, err_msg = check_crop_validity(v_path, args)
-            if not is_valid:
-                skipped_videos.append(f"{os.path.basename(v_path)}: {err_msg}")
-                continue
-
-            args['video_path'] = v_path
-            args['output'] = potential_output_str
-
-            batch_queue.append({
-                'filename': os.path.basename(v_path),
-                'output': os.path.basename(potential_output_str),
-                'status': 'Pending',
-                'args': args
-            })
-
-            current_queue_outputs.add(potential_output_str)
-            added_count += 1
-
-        progress_window.close()
-
-        # Restore Global
-        video_duration_ms = original_duration_ms
-
-        refresh_batch_table(window)
-        update_run_and_cancel_button_state(window, batch_queue)
-
-        if skipped_videos:
-            msg = LANG.get('msg_batch_report_summary', "Added {} videos.\n\nSkipped {} video(s):\n").format(added_count, len(skipped_videos))
-            msg += "\n".join(skipped_videos[:10])
-            if len(skipped_videos) > 10:
-                msg += "\n" + LANG.get('msg_and_others', "...and others.")
-            custom_popup(window, LANG.get('title_batch_report', "Batch Report"), msg, icon=ICON_PATH)
-
-    elif event == "-BTN-BATCH-START-":
         if window['prevent_system_sleep'].get():
             set_system_awake(True)
-        start_queue(window, batch_queue)
 
-    elif event == "-BTN-RUN-":
-        is_batch_start = window['-BTN-RUN-'].get_text() == LANG.get('btn_start_queue', "Start Queue")
+        window['-BTN-RUN-'].update(disabled=True)
+        window['-BTN-CANCEL-'].update(disabled=False)
+        window['-BTN-PAUSE-'].update(disabled=False, text=LANG.get('btn_pause', "Pause"))
+        window.is_processing = True
+        window.cancelled_by_user = False
 
-        if is_batch_start:
-            if window['prevent_system_sleep'].get():
-                set_system_awake(True)
-            start_queue(window, batch_queue)
+        def _run_single_video() -> None:
+            success = run_videocr(args, window)
+            if success:
+                gui_queue.put(('-VIDEOCR_OUTPUT-', '\n'))
+                gui_queue.put(('-VIDEOCR_OUTPUT-', LANG.get('status_success', "Successfully generated subtitle file!\n")))
+                if args.get('send_notification', True):
+                    notification_title = LANG.get('notification_title', "Your Subtitle generation is done!")
+                    gui_queue.put(('-NOTIFICATION_EVENT-', {'title': notification_title, 'message': os.path.basename(args['output'])}))
+            gui_queue.put(('-PROCESS-FINISHED-', None))
 
-        else:
-            if not video_path:
-                continue
+        threading.Thread(target=_run_single_video, daemon=True).start()
 
-            if hasattr(window, '_videocr_process_pid') and window._videocr_process_pid:
-                window['-OUTPUT-'].update(LANG.get('error_already_running', "Process is already running.\n"), append=True)
-                continue
-
-            args, errors = get_processing_args(values, window)
-            if errors or args is None:
-                errors_to_display = errors if errors is not None else ["Unknown validation error"]
-                window['-OUTPUT-'].update(LANG.get('val_err_header', "Validation Errors:\n"), append=True)
-                for error in errors_to_display:
-                    window['-OUTPUT-'].update(f"- {error}\n", append=True)
-                window.refresh()
-                continue
-
-            target_output_full = args['output']
-            existing_job_index = -1
-
-            for idx, job in enumerate(batch_queue):
-                if job['args']['output'] == target_output_full:
-                    existing_job_index = idx
-                    break
-
-            should_create_new = True
-
-            if existing_job_index != -1:
-                existing_status = batch_queue[existing_job_index]['status']
-
-                if existing_status in ('Cancelled', 'Error', 'Completed'):
-                    display_status = get_translated_status(existing_status)
-                    msg = LANG.get('popup_duplicate_msg', "A job for this output file already exists (Status: {}).\n\nDo you want to restart it with current settings?").format(display_status)
-                    choice = custom_popup_yes_no(window, LANG.get('title_duplicate_job', "Duplicate Job"), msg, icon=ICON_PATH)
-
-                    if choice == 'Yes':
-                        batch_queue[existing_job_index]['args'] = args
-                        batch_queue[existing_job_index]['status'] = 'Pending'
-                        should_create_new = False
-                    else:
-                        continue
-
-            if should_create_new:
-                batch_queue.append({
-                    'filename': os.path.basename(args['video_path']),
-                    'output': os.path.basename(args['output']),
-                    'status': 'Pending',
-                    'args': args
-                })
-
-            refresh_batch_table(window)
-
-            if window['prevent_system_sleep'].get():
-                set_system_awake(True)
-            start_queue(window, batch_queue)
-
-    elif event in ("-BTN-BATCH-PAUSE-", "-BTN-PAUSE-"):
+    elif event == "-BTN-PAUSE-":
         pid = getattr(window, '_videocr_process_pid', None)
         if not pid:
             continue
@@ -3688,291 +3654,18 @@ while True:
                 set_system_awake(True)
 
             if set_process_pause_state(pid, pause=False):
-                for key in ('-BTN-PAUSE-', '-BTN-BATCH-PAUSE-'):
-                    if key in window.AllKeysDict:
-                        window[key].update(text=LANG.get('btn_pause', "Pause"))
-
+                window['-BTN-PAUSE-'].update(text=LANG.get('btn_pause', "Pause"))
                 window['-OUTPUT-'].update(LANG.get('status_resuming', "\nResuming process...\n"), append=True)
                 update_taskbar(state='normal')
-
-                for job in batch_queue:
-                    if job['status'] == 'Paused':
-                        job['status'] = 'Processing'
-                        break
         else:
             set_system_awake(False)
 
             if set_process_pause_state(pid, pause=True):
-                for key in ('-BTN-PAUSE-', '-BTN-BATCH-PAUSE-'):
-                    if key in window.AllKeysDict:
-                        window[key].update(text=LANG.get('btn_resume', "Resume"))
-
+                window['-BTN-PAUSE-'].update(text=LANG.get('btn_resume', "Resume"))
                 window['-OUTPUT-'].update(LANG.get('status_pausing', "\nPausing process...\n"), append=True)
                 update_taskbar(state='paused')
 
-                for job in batch_queue:
-                    if job['status'] == 'Processing':
-                        job['status'] = 'Paused'
-                        break
-
-        refresh_batch_table(window)
-
-    elif event == "-BTN-BATCH-CLEAR-":
-        active_jobs = [j for j in batch_queue if j['status'] in ('Processing', 'Paused')]
-        if active_jobs:
-            batch_queue[:] = active_jobs
-        else:
-            batch_queue.clear()
-
-        refresh_batch_table(window)
-        update_run_and_cancel_button_state(window, batch_queue)
-
-    elif event == "-BTN-BATCH-REMOVE-":
-        rows = values['-BATCH-TABLE-']
-        if rows:
-            selected_jobs = [batch_queue[i] for i in rows]
-
-            if any(job['status'] in ('Processing', 'Paused') for job in selected_jobs):
-                custom_popup(window, LANG.get('title_error', "Error"), LANG.get('popup_cannot_remove_running', "The currently running or paused job cannot be removed.\nPlease stop or cancel the process first."), icon=ICON_PATH)
-                continue
-
-            for i in sorted(rows, reverse=True):
-                del batch_queue[i]
-
-            refresh_batch_table(window)
-            update_run_and_cancel_button_state(window, batch_queue)
-
-    elif event == '-BATCH-TABLE-':
-        if getattr(window, 'ignore_table_event', False):
-            window.ignore_table_event = False
-            window.last_selection = values['-BATCH-TABLE-']
-            continue
-
-        selected = values['-BATCH-TABLE-']
-        if not selected:
-            window.batch_anchor = None
-            window.batch_focus = None
-            window.last_selection = []
-            continue
-
-        last_sel = getattr(window, 'last_selection', [])
-        added = [x for x in selected if x not in last_sel]
-
-        if added:
-            if len(added) == 1:
-                window.batch_anchor = added[0]
-                window.batch_focus = added[0]
-            else:
-                anchor = getattr(window, 'batch_anchor', added[0])
-                window.batch_focus = max(added) if anchor < added[0] else min(added)
-        elif len(selected) == 1:
-            window.batch_anchor = selected[0]
-            window.batch_focus = selected[0]
-
-        if getattr(window, 'batch_focus', None) is not None:
-            tree_widget = window['-BATCH-TABLE-'].Widget
-            row_id = tree_widget.get_children()[window.batch_focus]
-            tree_widget.focus(row_id)
-
-        window.last_selection = selected
-
-    elif event == "-BTN-BATCH-UP-":
-        rows = values['-BATCH-TABLE-']
-        if rows:
-            rows = sorted(rows)
-            if rows[0] > 0:
-                for idx in rows:
-                    batch_queue[idx], batch_queue[idx - 1] = batch_queue[idx - 1], batch_queue[idx]
-                refresh_batch_table(window)
-                window['-BATCH-TABLE-'].update(select_rows=[r - 1 for r in rows])
-
-    elif event == "-BTN-BATCH-DOWN-":
-        rows = values['-BATCH-TABLE-']
-        if rows:
-            rows = sorted(rows, reverse=True)
-            if rows[0] < len(batch_queue) - 1:
-                for idx in rows:
-                    batch_queue[idx], batch_queue[idx + 1] = batch_queue[idx + 1], batch_queue[idx]
-                refresh_batch_table(window)
-                window['-BATCH-TABLE-'].update(select_rows=[r + 1 for r in rows])
-
-    elif event == "-BTN-BATCH-RESET-":
-        rows = values['-BATCH-TABLE-']
-        if rows:
-            changed = False
-            for idx in rows:
-                status = batch_queue[idx]['status']
-                if status in ('Cancelled', 'Error', 'Completed'):
-                    batch_queue[idx]['status'] = 'Pending'
-                    changed = True
-
-            if changed:
-                refresh_batch_table(window)
-                update_run_and_cancel_button_state(window, batch_queue)
-
-    elif event == '-BATCH-TABLE--SHIFT-DOWN':
-        if getattr(window, 'batch_anchor', None) is None or getattr(window, 'batch_focus', None) is None:
-            continue
-
-        focus = window.batch_focus
-        if focus < len(batch_queue) - 1:
-            focus += 1
-
-        window.batch_focus = focus
-        start, end = min(window.batch_anchor, focus), max(window.batch_anchor, focus)
-        new_sel = list(range(start, end + 1))
-
-        window.ignore_table_event = True
-        window['-BATCH-TABLE-'].update(select_rows=new_sel)
-        window.last_selection = new_sel
-
-    elif event == '-BATCH-TABLE--SHIFT-UP':
-        if getattr(window, 'batch_anchor', None) is None or getattr(window, 'batch_focus', None) is None:
-            continue
-
-        focus = window.batch_focus
-        if focus > 0:
-            focus -= 1
-
-        window.batch_focus = focus
-        start, end = min(window.batch_anchor, focus), max(window.batch_anchor, focus)
-        new_sel = list(range(start, end + 1))
-
-        window.ignore_table_event = True
-        window['-BATCH-TABLE-'].update(select_rows=new_sel)
-        window.last_selection = new_sel
-
-    elif event == "-BTN-BATCH-EDIT-":
-        rows = values['-BATCH-TABLE-']
-        if rows and len(rows) == 1:
-            idx = rows[0]
-            job = batch_queue[idx]
-
-            if job['status'] in ('Processing', 'Paused'):
-                display_status = get_translated_status(job['status'])
-                error_title = LANG.get('title_error', "Error")
-                error_msg = LANG.get('popup_cannot_edit_running', "A job that is currently {} cannot be edited.\nPlease stop or cancel the process first.").format(display_status)
-                custom_popup(window, error_title, error_msg, icon=ICON_PATH)
-                continue
-
-            args = job['args']
-            v_path = args['video_path']
-
-            if not os.path.exists(v_path):
-                error_title = LANG.get('title_error', "Error")
-                error_msg = LANG.get('error_video_not_found', "Video file not found:\n{}").format(v_path)
-                custom_popup(window, error_title, error_msg, icon=ICON_PATH)
-                continue
-
-            window['-TABGROUP-'].Widget.select(0)
-            window['-VIDEO-LIST-'].update(value=v_path)
-
-            reset_crop_state()
-            graph.erase()
-
-            orig_w, orig_h, duration_ms = video_manager.open(v_path).values()
-            bt = get_valid_brightness_threshold(args.get('brightness_threshold'))
-            img_bytes, res_w, res_h, off_x, off_y = video_manager.get_frame(0, graph_size, brightness_threshold=bt)
-
-            if img_bytes and duration_ms > 0:
-                video_path = v_path
-                original_frame_width = orig_w
-                original_frame_height = orig_h
-                video_duration_ms = duration_ms
-                current_time_ms = 0.0
-                resized_frame_width = res_w
-                resized_frame_height = res_h
-                image_offset_x = off_x
-                image_offset_y = off_y
-                current_image_bytes = img_bytes.getvalue()
-
-                graph.draw_image(data=current_image_bytes, location=(image_offset_x, image_offset_y))
-
-                window["-SLIDER-"].update(range=(0, video_duration_ms), value=0, disabled=False)
-                update_time_display(window, 0, video_duration_ms)
-                window['-BTN-RUN-'].update(disabled=False)
-                window['-SAVE_AS_BTN-'].update(disabled=False)
-
-                # --- RESTORE SETTINGS ---
-                window['--output'].update(args.get('output', ''))
-
-                # Restore Engine selection
-                saved_engine = args.get('ocr_engine', 'paddleocr')
-                if saved_engine == 'google_lens':
-                    engine_display = OCR_ENGINES[1]
-                    active_lang_list = lens_display_names
-                    lookup = lens_abbr_lookup
-                else:
-                    engine_display = OCR_ENGINES[0]
-                    active_lang_list = paddle_display_names
-                    lookup = paddle_abbr_lookup
-
-                window['-OCR_ENGINE_COMBO-'].update(value=engine_display)
-
-                # Restore Language based on the restored engine
-                saved_lang_abbr = args.get('lang', 'en')
-                disp_name = next((k for k, v in lookup.items() if v == saved_lang_abbr), DEFAULT_SUBTITLE_LANGUAGE)
-                window['-LANG_COMBO-'].update(values=active_lang_list, value=disp_name)
-
-                # Restore remaining simple arguments
-                for arg_key, arg_val in args.items():
-                    if arg_key in ('ocr_engine', 'lang'):
-                        continue
-                    gui_key = f"--{arg_key}"
-                    if gui_key in window.AllKeysDict:
-                        window[gui_key].update(arg_val)
-
-                new_boxes: list[dict[str, Any]] = []
-
-                def restore_box(cx: float, cy: float, cw: float, ch: float, orig_w: int, orig_h: int, res_w: int, res_h: int) -> dict[str, Any]:
-                    sx = res_w / orig_w if orig_w > 0 else 0
-                    sy = res_h / orig_h if orig_h > 0 else 0
-
-                    rx1 = cx * sx
-                    ry1 = cy * sy
-                    rx2 = (cx + cw) * sx
-                    ry2 = (cy + ch) * sy
-
-                    return {
-                        'coords': {'crop_x': int(cx), 'crop_y': int(cy), 'crop_width': int(cw), 'crop_height': int(ch)},
-                        'img_points': ((rx1, ry1), (rx2, ry2))
-                    }
-
-                if 'crop_x' in args:
-                    new_boxes.append(restore_box(
-                        args['crop_x'], args['crop_y'], args['crop_width'], args['crop_height'],
-                        original_frame_width, original_frame_height, resized_frame_width, resized_frame_height
-                    ))
-
-                if args.get('use_dual_zone') and 'crop_x2' in args:
-                    new_boxes.append(restore_box(
-                        args['crop_x2'], args['crop_y2'], args['crop_width2'], args['crop_height2'],
-                        original_frame_width, original_frame_height, resized_frame_width, resized_frame_height
-                    ))
-
-                window.crop_boxes = new_boxes
-                redraw_canvas_and_boxes()
-
-                if not new_boxes:
-                    window['-CROP_COORDS-'].update("Not Set")
-                    window["-BTN-CLEAR_CROP-"].update(disabled=True)
-                elif len(new_boxes) == 1:
-                    b = new_boxes[0]
-                    window['-CROP_COORDS-'].update(f"({b['coords']['crop_x']}, {b['coords']['crop_y']}, {b['coords']['crop_width']}, {b['coords']['crop_height']})")
-                    window["-BTN-CLEAR_CROP-"].update(disabled=False)
-                else:
-                    coords_str_parts = []
-                    zone_text = LANG.get('crop_zone_text', "Zone")
-                    for i, b in enumerate(new_boxes):
-                        coords_str_parts.append(f"{zone_text} {i + 1}: ({b['coords']['crop_x']}, {b['coords']['crop_y']}, {b['coords']['crop_width']}, {b['coords']['crop_height']})")
-                    window['-CROP_COORDS-'].update("  |  ".join(coords_str_parts))
-                    window["-BTN-CLEAR_CROP-"].update(disabled=False)
-
-                del batch_queue[idx]
-                refresh_batch_table(window)
-                update_run_and_cancel_button_state(window, batch_queue)
-
-    # --- Clear Crop Button ---
+    # --- Clear Crop Button ---    # --- Clear Crop Button ---
     elif event == "-BTN-CLEAR_CROP-":
         reset_crop_state()
         if video_path and current_image_bytes:
@@ -3981,7 +3674,7 @@ while True:
         save_settings(window, values)
 
     # --- Cancel Button Clicked ---
-    elif event in ("-BTN-CANCEL-", "-BTN-BATCH-STOP-"):
+    elif event == "-BTN-CANCEL-":
         pid_to_kill = getattr(window, '_videocr_process_pid', None)
         if pid_to_kill:
             window.cancelled_by_user = True
@@ -4002,7 +3695,6 @@ while True:
         else:
             window['-OUTPUT-'].update(LANG.get('error_no_process_to_cancel', "\nNo process is currently running to cancel.\n"), append=True)
             window['-BTN-CANCEL-'].update(disabled=True)
-            window['-BTN-BATCH-STOP-'].update(disabled=True)
             window['-BTN-RUN-'].update(disabled=not video_path)
 
 # --- Cleanup ---

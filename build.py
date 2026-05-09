@@ -251,7 +251,7 @@ def create_windows_installer(final_app_path: Path, args: argparse.Namespace) -> 
         print("         or provide the path to iscc.exe using the --iscc argument.")
         return
 
-    display_target_name = final_app_path.name.replace("VideOCR-", "").replace(f"-v{APP_VERSION}", "")
+    display_target_name = final_app_path.name.replace("VideOCRplus-", "").replace(f"-v{APP_VERSION}", "")
     print_header(f"Creating Windows Installer for {display_target_name}")
 
     script_path = Path("Installer/Windows/installer_template.iss")
@@ -367,13 +367,13 @@ def package_target(build_target: str, args: argparse.Namespace, releases_dir: Pa
     else:
         base_target_name = build_target.upper()
 
-    cli_final_name = f"videocr-cli-{base_target_name}-v{APP_VERSION}{cuda_suffix}{release_tag}{os_suffix}"
+    cli_final_name = f"videocrplus-cli-{base_target_name}-v{APP_VERSION}{cuda_suffix}{release_tag}{os_suffix}"
     final_cli_path = releases_dir / cli_final_name
     print(f"Creating standalone CLI at '{final_cli_path}'")
     shutil.copytree(temp_cli_dist, final_cli_path)
 
     if not is_cli_only and temp_gui_dist:
-        final_app_folder_name = f"VideOCR-{base_target_name}-v{APP_VERSION}{cuda_suffix}{release_tag}{os_suffix}"
+        final_app_folder_name = f"VideOCRplus-{base_target_name}-v{APP_VERSION}{cuda_suffix}{release_tag}{os_suffix}"
 
         # Merge CLI into GUI
         print(f"Merging CLI files into GUI root for {final_app_folder_name}...")
@@ -424,7 +424,7 @@ def package_target(build_target: str, args: argparse.Namespace, releases_dir: Pa
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="VideOCR Build Script", formatter_class=argparse.RawTextHelpFormatter)
+    parser = argparse.ArgumentParser(description="VideOCRplus Build Script", formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument(
         "--target",
         choices=["cpu", "gpu", "all"],
@@ -491,27 +491,26 @@ def main() -> None:
     # Compile GUI conditionally
     gui_dist_folder = None
     if not is_cli_only:
-        gui_script = "VideOCR.py"
-        gui_dist_folder = Path("VideOCR.dist")
+        gui_script = "gui.py"
+        gui_dist_folder = Path("gui.dist")
         if gui_dist_folder.exists():
             shutil.rmtree(gui_dist_folder)
         run_command([sys.executable, "-m", "nuitka", gui_script])
         if not gui_dist_folder.is_dir():
             print(f"ERROR: Nuitka failed to create the GUI dist folder: {gui_dist_folder}")
             sys.exit(1)
-        gui_exe = gui_dist_folder / "VideOCR.exe"
+        gui_exe = gui_dist_folder / "VideOCRplus.exe"
         if gui_exe.exists():
             sign_file(args.signtool, args.sign_cert_name, gui_exe)
     else:
         print("Skipping GUI compilation due to --cli-only flag.")
 
     # Compile CLI
-    cli_folder = Path("CLI")
-    cli_script = "videocr_cli.py"
-    cli_dist_folder = cli_folder / "videocr_cli.dist"
+    cli_script = "cli.py"
+    cli_dist_folder = Path("cli.dist")
     if cli_dist_folder.exists():
         shutil.rmtree(cli_dist_folder)
-    run_command([sys.executable, "-m", "nuitka", cli_script], cwd=str(cli_folder))
+    run_command([sys.executable, "-m", "nuitka", cli_script])
     if not cli_dist_folder.is_dir():
         print(f"ERROR: Nuitka failed to create the CLI dist folder: {cli_dist_folder}")
         sys.exit(1)

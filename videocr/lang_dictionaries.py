@@ -134,6 +134,16 @@ PADDLEOCR_LANGS = {
     }
 }
 
+LLM_VISION_LANGS = {
+    "en", "ch", "zh-CN", "zh-TW", "ja", "ko",  # CJK
+    "fr", "de", "es", "it", "pt", "nl", "ru",   # European
+    "ar", "fa", "he", "ur",                       # RTL
+    "hi", "th", "vi", "id", "ms", "tr",          # Asian/Other
+    "pl", "cs", "sk", "hu", "ro", "bg", "hr",    # Eastern European
+    "sv", "da", "no", "fi", "el", "uk",          # Nordic/Slavic
+    "auto",                                        # Auto-detect
+}
+
 GOOGLE_LENS_LANGS = {
     "af",
     "sq",

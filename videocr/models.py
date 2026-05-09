@@ -35,6 +35,20 @@ class PredictedFrames:
         self.zone_index = zone_index
         self.lines: list[list[PredictedText]] = []
 
+        # LLM Vision: pred_data is [[(text, confidence), ...]] — no bounding boxes
+        if ocr_engine == "llm_vision" and pred_data and pred_data[0] and isinstance(pred_data[0][0], tuple):
+            llm_lines = pred_data[0]
+            text_parts: list[str] = []
+            total_conf = 0.0
+            for line_text, line_conf in llm_lines:
+                text_parts.append(line_text)
+                total_conf += line_conf
+            self.text = '\n'.join(text_parts)
+            self.confidence = total_conf / len(llm_lines) if llm_lines else 0
+            if normalize_to_simplified_chinese and lang in ("ch", "zh-CN") and self.text:
+                self.text = self._converter.convert(self.text)
+            return
+
         all_words: list[PredictedText] = []
         for word_pred in pred_data[0]:
             if len(word_pred) < 2:

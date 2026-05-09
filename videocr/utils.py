@@ -113,9 +113,14 @@ def extract_non_chinese_segments(text: str) -> list[tuple[str, str]]:
     return segments
 
 
+def _get_base_dir() -> str:
+    """Get the base directory for finding executables and models."""
+    return os.path.dirname(os.path.abspath(sys.argv[0]))
+
+
 def find_executable(program_name: str) -> str:
     """Finds an executable inside a directory starting with the program name."""
-    program_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    program_dir = _get_base_dir()
     ext = ".exe" if sys.platform == "win32" else ".bin"
     executable_name = f"{program_name}{ext}"
 
@@ -130,7 +135,7 @@ def find_executable(program_name: str) -> str:
 
 def resolve_model_dirs(lang: str, use_server_model: bool) -> tuple[str, str, str]:
     """Resolves the model directory for the specified language and mode."""
-    program_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    program_dir = _get_base_dir()
     base_path = os.path.join(program_dir, "PaddleOCR.PP-OCRv5.support.files")
 
     det_path = os.path.join(base_path, "det")
@@ -424,13 +429,25 @@ def unstitch_polygon(poly: list[list[float]], mapping: list[dict[str, Any]]) -> 
     return intersections
 
 
-def stream_cli_process(args: list[str], log_name: str) -> Iterator[str]:
+def stream_cli_process(args: list[str], log_name: str, cwd: str | None = None) -> Iterator[str]:
     """Executes a CLI process, yields its stdout lines, and handles errors/logging."""
     cli_env = os.environ.copy()
     cli_env["PYTHONIOENCODING"] = "utf-8"
     cli_env["PYTHONUNBUFFERED"] = "1"
+    # PaddleOCR needs this to skip model source check
+    cli_env["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "1"
 
-    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env=cli_env, bufsize=1)
+    # Ensure cwd is None if empty string (avoids WinError 123 on Windows)
+    if cwd is not None and not cwd:
+        cwd = None
+
+    try:
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env=cli_env, bufsize=1, cwd=cwd)
+    except OSError as e:
+        log_message = f"Failed to start process: {e}\nCommand: {' '.join(args)}\nCWD: {cwd}\nArgs types: {[type(a).__name__ for a in args]}"
+        log_file_path = log_error(log_message, log_name=log_name)
+        print(f"\nError: Failed to start process. See the log file for technical details:\n{log_file_path}", flush=True)
+        sys.exit(1)
 
     stderr_lines: list[str] = []
     stderr_thread = threading.Thread(target=read_pipe, args=(process.stderr, stderr_lines))
@@ -587,3 +604,58 @@ def process_ssim_group(union_rects: list[list[float]], group_frames: list[tuple[
     local_deleted = len(group_frames) - len(local_surviving_items)
 
     return local_surviving_items, local_deleted
+
+
+def process_ssim_group_for_llm(union_rects: list[list[float]], group_frames: list[tuple[int, list[list[float]], float, dict[str, Any]]],
+                               loaded_grids: dict[str, Any], ssim_threshold: float) -> list[list[dict[str, Any]]]:
+    """Processes a group for SSIM, returning ALL contiguous similar batches (not just the best frame per batch).
+    Each batch is a list of frame dicts with 'img', 'frame_idx', 'det_score' keys.
+    Used by the LLM Vision engine to send full batches for semantic deduplication."""
+    all_batches: list[list[dict[str, Any]]] = []
+    current_similar_batch: list[dict[str, Any]] = []
+    prev_crops: list[Any] = []
+
+    for i, (_, _, det_score, m) in enumerate(group_frames):
+        grid_img = loaded_grids[m["grid_file"]]
+        img = grid_img[m["y"]:m["y"] + m["h"], m["x"]:m["x"] + m["w"]]
+        h, w = img.shape[:2]
+
+        current_crops: list[Any] = []
+        for rect in union_rects:
+            cx1, cy1 = max(0, int(rect[0])), max(0, int(rect[1]))
+            cx2, cy2 = min(w, int(rect[2])), min(h, int(rect[3]))
+            current_crops.append(img[cy1:cy2, cx1:cx2])
+
+        item_dict = {
+            "img": img.copy(),
+            "frame_idx": m["frame_idx"],
+            "det_score": det_score
+        }
+
+        if i == 0:
+            prev_crops = current_crops
+            current_similar_batch.append(item_dict)
+            continue
+
+        all_lines_match = True
+        for prev_c, curr_c in zip(prev_crops, current_crops):
+            if prev_c.size == 0 or curr_c.size == 0:
+                all_lines_match = False
+                break
+            score = fast_ssim.ssim(prev_c, curr_c, data_range=255)
+            if score <= ssim_threshold:
+                all_lines_match = False
+                break
+
+        if all_lines_match:
+            current_similar_batch.append(item_dict)
+        else:
+            if current_similar_batch:
+                all_batches.append(current_similar_batch)
+            current_similar_batch = [item_dict]
+            prev_crops = current_crops
+
+    if current_similar_batch:
+        all_batches.append(current_similar_batch)
+
+    return all_batches
