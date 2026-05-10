@@ -1,5 +1,6 @@
 # Pycache
 __pycache__/
+.plugin_cache
 
 # Config file
 videocr_gui_config.ini
@@ -13,9 +14,15 @@ videocr_gui_config.ini
 /Chrome-Lens-OCR*
 /videocr-cli*/
 
+
 # Environments
 .env
 .venv
 env/
 venv/
 ENV/
+
+# AI
+
+.claude
+claude/
