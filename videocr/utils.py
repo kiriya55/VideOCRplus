@@ -56,6 +56,61 @@ def get_srt_timestamp_from_ms(ms: float) -> str:
     return f'{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}'
 
 
+def validate_time_parts(time_str: str | None) -> tuple[int, int, int] | None:
+    """Parse MM:SS or HH:MM:SS and validate ranges. Returns (h, m, s) or None."""
+    if not time_str:
+        return None
+
+    parts = time_str.split(':')
+    try:
+        if len(parts) == 2:
+            m = int(parts[0])
+            s = int(parts[1])
+            if m < 0 or s < 0 or s >= 60:
+                return None
+            return (0, m, s)
+        elif len(parts) == 3:
+            h = int(parts[0])
+            m = int(parts[1])
+            s = int(parts[2])
+            if h < 0 or m < 0 or s < 0 or m >= 60 or s >= 60:
+                return None
+            return (h, m, s)
+        else:
+            return None
+    except ValueError:
+        return None
+
+
+def is_valid_time_format(time_str: str | None) -> bool:
+    """Check if a string is in MM:SS or HH:MM:SS format with valid ranges."""
+    if not time_str:
+        return True
+    return validate_time_parts(time_str) is not None
+
+
+def time_string_to_seconds(time_str: str | None) -> int | None:
+    """Convert MM:SS or HH:MM:SS string to total seconds. Returns None if invalid."""
+    if not time_str:
+        return None
+    parsed = validate_time_parts(time_str)
+    if parsed is None:
+        return None
+    h, m, s = parsed
+    return h * 3600 + m * 60 + s
+
+
+def get_seconds_from_srt_timestamp(time_str: str) -> float:
+    """Parse a timestamp like '00:00:01,500' or '00:01:00' into seconds (float)."""
+    try:
+        parts = time_str.replace(',', '.').split(':')
+        if len(parts) == 3:
+            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+    except Exception:
+        return 0.0
+    return 0.0
+
+
 def frame_to_array(frame: av.VideoFrame, fmt: str) -> np.ndarray[Any, Any]:
     """Converts a frame to an array, safely falls back if threads arg is unsupported."""
     if not hasattr(frame_to_array, "supports_threads"):
@@ -68,6 +123,17 @@ def frame_to_array(frame: av.VideoFrame, fmt: str) -> np.ndarray[Any, Any]:
             frame_to_array.supports_threads = False  # type: ignore
 
     return frame.to_ndarray(format=fmt)
+
+
+def apply_brightness_threshold(img: np.ndarray[Any, Any], threshold: int) -> None:
+    """Zero out pixels below the brightness threshold (in-place)."""
+    gray = (
+        (img[..., 0].astype(np.uint16) * 77 +
+         img[..., 1].astype(np.uint16) * 150 +
+         img[..., 2].astype(np.uint16) * 29) >> 8
+    ).astype(np.uint8)
+    mask = gray > threshold
+    img *= mask[..., None]
 
 
 def is_on_same_line(word1: PredictedText, word2: PredictedText) -> bool:
@@ -113,14 +179,14 @@ def extract_non_chinese_segments(text: str) -> list[tuple[str, str]]:
     return segments
 
 
-def _get_base_dir() -> str:
+def get_base_dir() -> str:
     """Get the base directory for finding executables and models."""
     return os.path.dirname(os.path.abspath(sys.argv[0]))
 
 
 def find_executable(program_name: str) -> str:
     """Finds an executable inside a directory starting with the program name."""
-    program_dir = _get_base_dir()
+    program_dir = get_base_dir()
     ext = ".exe" if sys.platform == "win32" else ".bin"
     executable_name = f"{program_name}{ext}"
 
@@ -135,7 +201,7 @@ def find_executable(program_name: str) -> str:
 
 def resolve_model_dirs(lang: str, use_server_model: bool) -> tuple[str, str, str]:
     """Resolves the model directory for the specified language and mode."""
-    program_dir = _get_base_dir()
+    program_dir = get_base_dir()
     base_path = os.path.join(program_dir, "PaddleOCR.PP-OCRv5.support.files")
 
     det_path = os.path.join(base_path, "det")
@@ -167,6 +233,8 @@ def resolve_model_dirs(lang: str, use_server_model: bool) -> tuple[str, str, str
         rec_sub = f"{lang}_PP-OCRv5_mobile_rec"
     elif lang == "ka":
         rec_sub = "ka_PP-OCRv3_mobile_rec"
+    else:
+        raise ValueError(f"Unsupported language code '{lang}' for PaddleOCR model resolution.")
 
     return (
         os.path.join(det_path, det_sub),
@@ -311,12 +379,25 @@ def create_clean_temp_dir() -> str:
     return tempfile.mkdtemp(prefix=temp_prefix)
 
 
-def log_error(message: str, log_name: str = "error_log.txt") -> str:
-    """Saves errors to a log file."""
-    if sys.platform == "win32":
+def log_error(message: str, log_name: str = "error_log.txt", app_dir: str = "") -> str:
+    """Saves errors to a log file.
+
+    Args:
+        message: Error message to log.
+        log_name: Log file name.
+        app_dir: If set, checks for portable_mode.txt in this directory.
+                 When portable, logs are written to app_dir itself.
+    """
+    if app_dir and os.path.exists(os.path.join(app_dir, 'portable_mode.txt')):
+        log_dir = app_dir
+    elif sys.platform == "win32":
         log_dir = os.path.join(os.getenv('LOCALAPPDATA') or os.path.expanduser('~'), "VideOCR")
     else:
-        log_dir = os.path.join(os.path.expanduser('~'), ".config", "VideOCR")
+        xdg_state = os.environ.get("XDG_STATE_HOME")
+        if xdg_state:
+            log_dir = os.path.join(xdg_state, "VideOCR")
+        else:
+            log_dir = os.path.join(os.path.expanduser('~'), ".local", "state", "VideOCR")
 
     os.makedirs(log_dir, exist_ok=True)
 
@@ -547,11 +628,17 @@ def load_grid(g_file: str) -> tuple[str, Any]:
     return g_file, np.array(Image.open(g_file))
 
 
-def process_ssim_group(union_rects: list[list[float]], group_frames: list[tuple[int, list[list[float]], float, dict[str, Any]]],
-                       loaded_grids: dict[str, Any], ssim_threshold: float) -> tuple[list[dict[str, Any]], int]:
-    """Processes a group for SSIM, keeping the frame with the highest detection score per contiguous block."""
-    local_surviving_items: list[dict[str, Any]] = []
-    current_similar_batch: list[dict[str, Any]] = []
+def _iter_ssim_batches(
+    union_rects: list[list[float]],
+    group_frames: list[tuple[int, list[list[float]], float, dict[str, Any]]],
+    loaded_grids: dict[str, Any],
+    ssim_threshold: float,
+) -> Iterator[list[dict[str, Any]]]:
+    """Yield contiguous SSIM-similar batches from a group of frames.
+
+    Each yielded batch is a list of item dicts with 'img', 'frame_idx', 'det_score' keys.
+    """
+    current_batch: list[dict[str, Any]] = []
     prev_crops: list[Any] = []
 
     for i, (_, _, det_score, m) in enumerate(group_frames):
@@ -565,15 +652,15 @@ def process_ssim_group(union_rects: list[list[float]], group_frames: list[tuple[
             cx2, cy2 = min(w, int(rect[2])), min(h, int(rect[3]))
             current_crops.append(img[cy1:cy2, cx1:cx2])
 
-        item_dict = {
+        item_dict: dict[str, Any] = {
             "img": img.copy(),
             "frame_idx": m["frame_idx"],
-            "det_score": det_score
+            "det_score": det_score,
         }
 
         if i == 0:
             prev_crops = current_crops
-            current_similar_batch.append(item_dict)
+            current_batch.append(item_dict)
             continue
 
         all_lines_match = True
@@ -587,75 +674,33 @@ def process_ssim_group(union_rects: list[list[float]], group_frames: list[tuple[
                 break
 
         if all_lines_match:
-            current_similar_batch.append(item_dict)
+            current_batch.append(item_dict)
         else:
-            best_item = max(current_similar_batch, key=lambda x: x["det_score"])
-            best_item["frame_idx"] = current_similar_batch[0]["frame_idx"]
-            local_surviving_items.append(best_item)
-
-            current_similar_batch = [item_dict]
+            if current_batch:
+                yield current_batch
+            current_batch = [item_dict]
             prev_crops = current_crops
 
-    if current_similar_batch:
-        best_item = max(current_similar_batch, key=lambda x: x["det_score"])
-        best_item["frame_idx"] = current_similar_batch[0]["frame_idx"]
+    if current_batch:
+        yield current_batch
+
+
+def process_ssim_group(union_rects: list[list[float]], group_frames: list[tuple[int, list[list[float]], float, dict[str, Any]]],
+                       loaded_grids: dict[str, Any], ssim_threshold: float) -> tuple[list[dict[str, Any]], int]:
+    """Processes a group for SSIM, keeping the frame with the highest detection score per contiguous block."""
+    local_surviving_items: list[dict[str, Any]] = []
+
+    for batch in _iter_ssim_batches(union_rects, group_frames, loaded_grids, ssim_threshold):
+        best_item = max(batch, key=lambda x: x["det_score"])
+        best_item["frame_idx"] = batch[0]["frame_idx"]
         local_surviving_items.append(best_item)
 
     local_deleted = len(group_frames) - len(local_surviving_items)
-
     return local_surviving_items, local_deleted
 
 
 def process_ssim_group_for_llm(union_rects: list[list[float]], group_frames: list[tuple[int, list[list[float]], float, dict[str, Any]]],
                                loaded_grids: dict[str, Any], ssim_threshold: float) -> list[list[dict[str, Any]]]:
-    """Processes a group for SSIM, returning ALL contiguous similar batches (not just the best frame per batch).
-    Each batch is a list of frame dicts with 'img', 'frame_idx', 'det_score' keys.
+    """Processes a group for SSIM, returning ALL contiguous similar batches.
     Used by the LLM Vision engine to send full batches for semantic deduplication."""
-    all_batches: list[list[dict[str, Any]]] = []
-    current_similar_batch: list[dict[str, Any]] = []
-    prev_crops: list[Any] = []
-
-    for i, (_, _, det_score, m) in enumerate(group_frames):
-        grid_img = loaded_grids[m["grid_file"]]
-        img = grid_img[m["y"]:m["y"] + m["h"], m["x"]:m["x"] + m["w"]]
-        h, w = img.shape[:2]
-
-        current_crops: list[Any] = []
-        for rect in union_rects:
-            cx1, cy1 = max(0, int(rect[0])), max(0, int(rect[1]))
-            cx2, cy2 = min(w, int(rect[2])), min(h, int(rect[3]))
-            current_crops.append(img[cy1:cy2, cx1:cx2])
-
-        item_dict = {
-            "img": img.copy(),
-            "frame_idx": m["frame_idx"],
-            "det_score": det_score
-        }
-
-        if i == 0:
-            prev_crops = current_crops
-            current_similar_batch.append(item_dict)
-            continue
-
-        all_lines_match = True
-        for prev_c, curr_c in zip(prev_crops, current_crops):
-            if prev_c.size == 0 or curr_c.size == 0:
-                all_lines_match = False
-                break
-            score = fast_ssim.ssim(prev_c, curr_c, data_range=255)
-            if score <= ssim_threshold:
-                all_lines_match = False
-                break
-
-        if all_lines_match:
-            current_similar_batch.append(item_dict)
-        else:
-            if current_similar_batch:
-                all_batches.append(current_similar_batch)
-            current_similar_batch = [item_dict]
-            prev_crops = current_crops
-
-    if current_similar_batch:
-        all_batches.append(current_similar_batch)
-
-    return all_batches
+    return list(_iter_ssim_batches(union_rects, group_frames, loaded_grids, ssim_threshold))

@@ -52,7 +52,7 @@ all = [
 
 [project.urls]
 Homepage = "https://github.com/kiriya55/VideOCRplus"
-documentation = "https://github.com/kiriya55/VideOCRplus/blob/master/README.md"
+documentation = "https://github.com/kiriya55/VideOCRplus/blob/main/README.md"
 Repository = "https://github.com/kiriya55/VideOCRplus.git"
 Issues = "https://github.com/kiriya55/VideOCRplus/issues"
 

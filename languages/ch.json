@@ -229,5 +229,30 @@
     "lbl_llm_disable_inference": "禁用推理模式（思考/推理）",
     "tip_llm_disable_inference": "禁用支持的 LLM 模型的推理/思考模式。\n对于 OpenAI o1/o3 模型：将 reasoning_effort 设置为 low。\n对于 Anthropic Claude：禁用扩展思考。\n可降低简单 OCR 任务的成本和延迟。",
     "lbl_llm_image_quality": "图像质量 (50-100)：",
-    "tip_llm_image_quality": "发送给 LLM 的图像的 JPEG 质量。\n较低的值可减小上传大小，对文字识别影响很小。\n默认：75。"
+    "tip_llm_image_quality": "发送给 LLM 的图像的 JPEG 质量。\n较低的值可减小上传大小，对文字识别影响很小。\n默认：75。",
+
+    "chk_enable_google_lens": "启用 Google Lens 引擎",
+    "tip_enable_google_lens": "Google Lens 需要互联网和 Chrome Lens CLI。\n启用此选项以将 Google Lens 添加为 OCR 引擎选项。",
+    "title_enable_google_lens": "启用 Google Lens 引擎",
+    "msg_enable_google_lens": "Google Lens 引擎需要有效的互联网连接和 Chrome Lens CLI 工具。\n\n您是否已准备好所需的环境？",
+    "btn_expand_log": "展开",
+    "btn_collapse_log": "折叠",
+    "btn_open_output": "打开输出",
+    "title_clear_cache": "清除下载缓存",
+    "msg_clear_cache": "清除 {:.1f} MB 的缓存下载文件？",
+
+    "frm_video_info": "视频信息",
+    "frm_task_status": "任务状态",
+    "frm_quick_actions": "快捷操作",
+    "lbl_resolution": "分辨率：",
+    "lbl_duration": "时长：",
+    "lbl_fps": "帧率：",
+    "lbl_file_size": "大小：",
+    "lbl_engine": "引擎：",
+    "lbl_status": "状态：",
+    "lbl_gpu": "GPU：",
+    "lbl_idle": "空闲",
+    "video_placeholder": "请打开视频文件",
+    "lbl_crop": "裁剪：",
+    "lbl_seek_label": "定位："
 }

@@ -15,8 +15,40 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
+from .utils import get_base_dir
+
 GITHUB_API = "https://api.github.com"
 GH_PROXY = "https://gh-proxy.com"
+
+
+def get_cache_dir() -> str:
+    """Return the directory where downloaded plugin archives are cached."""
+    cache_dir = os.path.join(get_base_dir(), ".plugin_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def clear_cache() -> int:
+    """Clear all cached plugin archives. Returns number of files removed."""
+    cache_dir = get_cache_dir()
+    count = 0
+    for f in os.listdir(cache_dir):
+        fpath = os.path.join(cache_dir, f)
+        if os.path.isfile(fpath):
+            os.remove(fpath)
+            count += 1
+    return count
+
+
+def get_cache_size() -> int:
+    """Return total size of cached archives in bytes."""
+    cache_dir = get_cache_dir()
+    total = 0
+    for f in os.listdir(cache_dir):
+        fpath = os.path.join(cache_dir, f)
+        if os.path.isfile(fpath):
+            total += os.path.getsize(fpath)
+    return total
 
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
@@ -106,7 +138,7 @@ PLUGIN_REGISTRY: dict[str, dict[str, Any]] = {
 
 def get_install_dir() -> str:
     """Return the directory where plugins should be installed."""
-    return os.path.dirname(os.path.abspath(sys.argv[0]))
+    return get_base_dir()
 
 
 def check_plugin_status(plugin_key: str) -> dict[str, Any]:
@@ -338,16 +370,19 @@ def _extract_7z(archive_path: str, dest_dir: str) -> None:
         with py7zr.SevenZipFile(archive_path, mode='r') as z:
             z.extractall(dest_dir)
         return
-    except ImportError:
-        pass
+    except ImportError as e:
+        import sys
+        last_error = f"py7zr not available ({e}). Python: {sys.executable}"
     except Exception as e:
         last_error = f"py7zr extraction failed: {e}"
 
     if not found_cmd:
+        import sys
         raise RuntimeError(
-            "7-Zip not found. Please install 7-Zip (https://7-zip.org) "
-            "and make sure '7z' is added to your system PATH.\n"
-            "Alternatively, install py7zr: pip install py7zr"
+            f"7-Zip not found and py7zr not available.\n"
+            f"Python executable: {sys.executable}\n"
+            f"Install 7-Zip (https://7-zip.org) or run:\n"
+            f"\"{sys.executable}\" -m pip install py7zr"
         )
     raise RuntimeError(f"Extraction failed: {last_error}")
 
@@ -394,38 +429,63 @@ class PluginDownloadTask:
                 return
 
             self.total_bytes = asset["size"]
-            download_url = asset["browser_download_url"]
+            asset_name = asset["name"]
 
-            # Download to temp file
-            _update("downloading", 0.0)
-            tmp_dir = tempfile.mkdtemp(prefix="videocr_dl_")
-            tmp_path = os.path.join(tmp_dir, asset["name"])
+            # Check cache first
+            cache_dir = get_cache_dir()
+            cached_path = os.path.join(cache_dir, asset_name)
+            use_cache = False
 
-            def _progress(downloaded: int, total: int) -> None:
-                self.downloaded_bytes = downloaded
-                if total > 0:
-                    prog = downloaded / total
-                    _update("downloading", prog)
+            if os.path.isfile(cached_path) and os.path.getsize(cached_path) == asset["size"]:
+                use_cache = True
+                _update("downloading", 1.0)
+            else:
+                download_url = asset["browser_download_url"]
 
-            success = download_file(
-                download_url, tmp_path,
-                use_proxy=self.use_proxy,
-                progress_callback=_progress,
-                cancel_event=self.cancel_event,
-            )
+                # Download to cache
+                _update("downloading", 0.0)
+                os.makedirs(cache_dir, exist_ok=True)
+                tmp_path = os.path.join(cache_dir, f".tmp_{asset_name}")
 
-            if not success:
-                _update("cancelled", 0.0)
-                return
+                def _progress(downloaded: int, total: int) -> None:
+                    self.downloaded_bytes = downloaded
+                    if total > 0:
+                        prog = downloaded / total
+                        _update("downloading", prog)
 
-            # Extract
+                success = download_file(
+                    download_url, tmp_path,
+                    use_proxy=self.use_proxy,
+                    progress_callback=_progress,
+                    cancel_event=self.cancel_event,
+                )
+
+                if not success:
+                    _update("cancelled", 0.0)
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                    return
+
+                # Move temp file to cache
+                if os.path.exists(cached_path):
+                    os.remove(cached_path)
+                os.rename(tmp_path, cached_path)
+
+            # Extract from cache
             _update("extracting", 0.9)
             install_dir = get_install_dir()
             extract_to = os.path.join(install_dir, self.info["extract_to"])
-            extract_archive(tmp_path, extract_to)
-
-            # Cleanup
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            try:
+                extract_archive(cached_path, extract_to)
+            except Exception as extract_err:
+                # Clean up partial extraction so status check doesn't
+                # report a broken install as "installed"
+                check_path = self.info.get("check_path")
+                if check_path:
+                    partial_dir = os.path.join(install_dir, check_path)
+                    if os.path.isdir(partial_dir):
+                        shutil.rmtree(partial_dir, ignore_errors=True)
+                raise extract_err
 
             _update("done", 1.0)
 
@@ -446,9 +506,15 @@ def check_extraction_capability() -> tuple[bool, str]:
     try:
         import py7zr
         return True, "py7zr available"
-    except ImportError:
-        pass
-    return False, "7-Zip not found. Install 7-Zip or run: pip install py7zr"
+    except ImportError as e:
+        import sys
+        return False, (
+            f"py7zr import failed: {e}\n"
+            f"Python: {sys.executable}\n"
+            f"Install with: \"{sys.executable}\" -m pip install py7zr"
+        )
+    except Exception as e:
+        return False, f"py7zr error: {e}"
 
 
 def get_all_plugins_status(ocr_engine: str = "") -> list[dict[str, Any]]:

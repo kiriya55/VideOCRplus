@@ -18,6 +18,7 @@ import wordninja_enhanced as wordninja  # type: ignore
 from PIL import Image
 
 from . import llm_vision, utils
+from .config import DetectionConfig, FrameConfig, LlmConfig, OcrConfig, PostProcessConfig, TimeRange
 from .models import PredictedFrames, PredictedSubtitle
 from thefuzz import fuzz  # type: ignore
 from .pyav_adapter import Capture, get_video_properties
@@ -61,36 +62,9 @@ class Video:
         self.duration_ms = props['duration_ms']
         self.start_time_offset_ms = props['start_time_offset_ms']
 
-    def run_ocr(self, use_gpu: bool, ocr_engine: str, lang: str, use_angle_cls: bool, time_start: str, time_end: str, conf_threshold: int,
-                use_fullframe: bool, brightness_threshold: int | None, ssim_threshold: int, subtitle_position: str, frames_to_skip: int,
-                crop_zones: list[dict[str, int]], ocr_image_max_width: int, normalize_to_simplified_chinese: bool,
-                llm_api_key: str = '', llm_api_base: str = '', llm_model: str = '', llm_concurrency: int = 4,
-                llm_disable_inference: bool = False, llm_max_frames_per_grid: int = 0, llm_image_quality: int = 75) -> None:
-        conf_threshold_ratio = conf_threshold / 100
-        ssim_threshold_ratio = ssim_threshold / 100
-        self.lang = lang
-        self.use_fullframe = use_fullframe
-        self.validated_zones = []
-        self.pred_frames_zone1 = []
-        self.pred_frames_zone2 = []
-
-        user_start_ms = 0.0
-        if time_start:
-            user_start_ms = utils.get_ms_from_time_str(time_start)
-
-        target_start_ms = user_start_ms + self.start_time_offset_ms
-
-        target_end_ms = None
-        target_end_str = "Unknown"
-
-        if time_end:
-            user_end_ms = utils.get_ms_from_time_str(time_end)
-            target_end_ms = user_end_ms + self.start_time_offset_ms
-            target_end_str = utils.get_srt_timestamp_from_ms(user_end_ms).split(',')[0]
-        elif self.duration_ms > 0:
-            target_end_str = utils.get_srt_timestamp_from_ms(self.duration_ms).split(',')[0]
-
-        for zone in crop_zones:
+    def _validate_zones(self, frame: FrameConfig) -> None:
+        """Validate crop zones and pre-calculate FFmpeg filter strings."""
+        for zone in frame.crop_zones:
             if zone['y'] >= self.height:
                 raise ValueError(f"Crop Y position ({zone['y']}) is outside video height ({self.height}).")
             if zone['x'] >= self.width:
@@ -109,9 +83,7 @@ class Video:
                 'midpoint_y': zone['y'] + (zone['height'] / 2)
             })
 
-        # Handle full frame and fallback scenarios by injecting them as standard zones
         if self.use_fullframe:
-            # Overwrite any user zones with a single full-frame zone
             self.validated_zones = [{
                 'x_start': 0,
                 'y_start': 0,
@@ -120,7 +92,6 @@ class Video:
                 'midpoint_y': self.height / 2
             }]
         elif not self.validated_zones:
-            # Default to bottom third if no zones were provided
             self.validated_zones.append({
                 'x_start': 0,
                 'y_start': 2 * self.height // 3,
@@ -129,18 +100,16 @@ class Video:
                 'midpoint_y': (2 * self.height // 3) + (self.height // 6)
             })
 
-        # Pre-calculate FFmpeg crop and scale strings for all zones
         for val_zone in self.validated_zones:
             crop_w = max(2, (min(self.width, val_zone['x_end']) - max(0, val_zone['x_start'])) & ~1)
             crop_h = max(2, (min(self.height, val_zone['y_end']) - max(0, val_zone['y_start'])) & ~1)
             crop_x = max(0, val_zone['x_start']) & ~1
             crop_y = max(0, val_zone['y_start']) & ~1
 
-            # Resize image
             MIN_SIDE = 64
             scale_ratio = 1.0
-            if ocr_image_max_width and crop_w > ocr_image_max_width:
-                scale_ratio = ocr_image_max_width / crop_w
+            if frame.ocr_image_max_width and crop_w > frame.ocr_image_max_width:
+                scale_ratio = frame.ocr_image_max_width / crop_w
 
             min_required_ratio = MIN_SIDE / min(crop_w, crop_h)
             if scale_ratio < min_required_ratio:
@@ -153,6 +122,346 @@ class Video:
             val_zone['h'] = target_h
             val_zone['crop_str'] = f"{crop_w}:{crop_h}:{crop_x}:{crop_y}"
             val_zone['scale_str'] = f"{target_w}:{target_h}:flags=area:threads=1"
+
+    def _resolve_time_range(self, time_range: TimeRange) -> tuple[float, float | None, str]:
+        """Resolve time_start/time_end strings into millisecond values and display string."""
+        user_start_ms = 0.0
+        if time_range.time_start:
+            user_start_ms = utils.get_ms_from_time_str(time_range.time_start)
+
+        target_start_ms = user_start_ms + self.start_time_offset_ms
+
+        target_end_ms: float | None = None
+        target_end_str = "Unknown"
+
+        if time_range.time_end:
+            user_end_ms = utils.get_ms_from_time_str(time_range.time_end)
+            target_end_ms = user_end_ms + self.start_time_offset_ms
+            target_end_str = utils.get_srt_timestamp_from_ms(user_end_ms).split(',')[0]
+        elif self.duration_ms > 0:
+            target_end_str = utils.get_srt_timestamp_from_ms(self.duration_ms).split(',')[0]
+
+        return user_start_ms, target_start_ms, target_end_ms, target_end_str
+
+    def _build_frame_predictions(
+        self,
+        ocr_outputs: dict[tuple[int, int], list[Any]],
+        surviving_frames_meta: set[tuple[int, int]],
+        empty_frames_meta: set[tuple[int, int]],
+        ocr: OcrConfig,
+        post: PostProcessConfig,
+        conf_threshold_ratio: float,
+        ocr_end: int,
+    ) -> None:
+        """Build PredictedFrames from OCR outputs and assign to zone lists."""
+        active_frame_coords = surviving_frames_meta | empty_frames_meta
+
+        frame_predictions_dict: dict[int, dict[int, PredictedFrames]] = {z: {} for z in range(len(self.validated_zones))}
+
+        for frame_index, zone_index in active_frame_coords:
+            ocr_result = ocr_outputs.get((frame_index, zone_index), [])
+            pred_data = [ocr_result] if ocr_result else [[]]
+
+            predicted_frame = PredictedFrames(ocr.ocr_engine, frame_index, pred_data, conf_threshold_ratio, zone_index, ocr.lang, post.normalize_to_simplified_chinese)
+            frame_predictions_dict[zone_index][frame_index] = predicted_frame
+
+        frame_predictions_list: dict[int, list[PredictedFrames]] = {}
+
+        for zone_idx in frame_predictions_dict:
+            frames = sorted(frame_predictions_dict[zone_idx].values(), key=lambda f: f.start_index)
+
+            if not frames:
+                continue
+
+            for i in range(len(frames) - 1):
+                current_pred = frames[i]
+                next_pred = frames[i + 1]
+                current_pred.end_index = next_pred.start_index - 1
+
+            if frames:
+                frames[-1].end_index = ocr_end - 1
+
+            frame_predictions_list[zone_idx] = frames
+
+        self.pred_frames_zone1 = frame_predictions_list.get(0, [])
+        self.pred_frames_zone2 = frame_predictions_list.get(1, [])
+
+        if not self.pred_frames_zone1 and not self.pred_frames_zone2:
+            print("Warning: No subtitle frames were generated.", flush=True)
+
+    def _run_recognition_pass(
+        self,
+        ocr: OcrConfig,
+        llm: LlmConfig,
+        rec_images_dir: str,
+        rec_image_map: dict[str, dict[str, int]],
+        llm_grids: list[dict[str, Any]],
+    ) -> dict[tuple[int, int], list[Any]]:
+        """Run OCR recognition on cropped images using the selected engine. Returns 2D-keyed OCR outputs."""
+        rec_ocr_outputs: dict[str, list[Any]] = {}
+        ocr_image_index = 0
+
+        if ocr.ocr_engine == "google_lens":
+            args = [
+                self.google_lens_path,
+                rec_images_dir,
+                self.lang,
+                "--get-coords",
+                "--oneline",
+                "-q",
+            ]
+
+            print("Starting Google Lens CLI...", flush=True)
+
+            for line in utils.stream_cli_process(args, "google_lens_error.log", cwd=os.path.dirname(self.google_lens_path)):
+                line = line.strip()
+                if not line or not line.startswith('{') or '"file"' not in line:
+                    continue
+
+                data = json.loads(line)
+                stitched_filename = data["file"]
+
+                if stitched_filename not in rec_image_map:
+                    continue
+
+                grid_w = data["dimensions"]["original_width"]
+                grid_h = data["dimensions"]["original_height"]
+
+                results: list[list[Any]] = []
+                for word_item in data["words"]:
+                    text = word_item["text"]
+                    separator = word_item["separator"]
+                    geom = word_item["geometry"]
+
+                    if not geom:
+                        continue
+
+                    cx = geom["center_x"] * grid_w
+                    cy = geom["center_y"] * grid_h
+                    w = geom["width"] * grid_w
+                    h = geom["height"] * grid_h
+
+                    x1, x2 = cx - w / 2.0, cx + w / 2.0
+                    y1, y2 = cy - h / 2.0, cy + h / 2.0
+                    box = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+
+                    combined_text = text + separator
+                    results.append([box, (combined_text, 1.0)])
+
+                rec_ocr_outputs[stitched_filename] = results
+                ocr_image_index += 1
+                print(f"\rStep 3/3: Performing OCR on image {ocr_image_index} of {len(rec_image_map)}", end="", flush=True)
+            print()
+
+        elif ocr.ocr_engine == "paddleocr":
+            args = [
+                self.paddleocr_path,
+                "ocr",
+                "--input", rec_images_dir,
+                "--device", "gpu" if ocr.use_gpu else "cpu",
+                "--use_textline_orientation", "true" if ocr.use_angle_cls else "false",
+                "--use_doc_orientation_classify", "false",
+                "--use_doc_unwarping", "false",
+                "--lang", self.lang,
+                "--text_detection_model_dir", self.det_model_dir,
+                "--text_detection_model_name", os.path.basename(self.det_model_dir),
+                "--text_recognition_model_dir", self.rec_model_dir,
+                "--text_recognition_model_name", os.path.basename(self.rec_model_dir),
+            ]
+
+            if ocr.use_angle_cls:
+                args += ["--textline_orientation_model_dir", self.cls_model_dir]
+                args += ["--textline_orientation_model_name", os.path.basename(self.cls_model_dir)]
+
+            print("Starting PaddleOCR...", flush=True)
+
+            current_image = None
+            for line in utils.stream_cli_process(args, "paddleocr_error.log", cwd=os.path.dirname(self.paddleocr_path)):
+                line = line.strip()
+
+                if "ppocr INFO: **********" in line:
+                    match = re.search(r"\*+(.+?)\*+$", line)
+                    if match:
+                        current_image = os.path.basename(match.group(1)).strip()
+                        rec_ocr_outputs[current_image] = []
+                        ocr_image_index += 1
+                        print(f"\rStep 3/3: Performing OCR on image {ocr_image_index} of {len(rec_image_map)}", end="", flush=True)
+                elif current_image and '[[' in line:
+                    try:
+                        match = re.search(r"ppocr INFO:\s*(\[.+\])", line)
+                        if match:
+                            parsed = ast.literal_eval(match.group(1))
+                            rec_ocr_outputs[current_image].append(parsed)
+                    except Exception as e:
+                        print(f"Error parsing OCR for {current_image}: {e}", flush=True)
+            print()
+
+        ocr_outputs: dict[tuple[int, int], list[Any]] = {}
+
+        if ocr.ocr_engine == "llm_vision":
+            total_llm_grids = len(llm_grids)
+            print(f"Starting LLM Vision recognition on {total_llm_grids} grid(s) (concurrency={llm.concurrency})...", flush=True)
+
+            llm_ocr_counter = 0
+            llm_errors: list[str] = []
+            llm_counter_lock = threading.Lock()
+
+            if llm_vision._DEBUG_ENABLED:
+                llm_vision._debug_log(f"=== LLM Vision Start: {total_llm_grids} grids, api_base={llm.api_base}, model={llm.model} ===")
+
+            missing = [g["path"] for g in llm_grids if not os.path.exists(g["path"])]
+            if missing:
+                if llm_vision._DEBUG_ENABLED:
+                    llm_vision._debug_log(f"ERROR: {len(missing)} grid files missing: {missing[:3]}")
+                print(f"Warning: {len(missing)} grid image files not found on disk. LLM recognition may fail.", flush=True)
+
+            def process_single_grid(grid_info: dict[str, Any]) -> list[tuple[int, int, str, float]]:
+                """Process one grid, return list of (frame_idx, zone_idx, text, confidence)."""
+                try:
+                    grid_path = grid_info["path"]
+                    if llm_vision._DEBUG_ENABLED:
+                        llm_vision._debug_log(f"Starting grid: {os.path.basename(grid_path)}, exists={os.path.exists(grid_path)}")
+
+                    grid_img = np.array(Image.open(grid_path))
+                    zone_idx = grid_info["zone_idx"]
+                    is_rep = grid_info.get("is_representative", False)
+                    frame_indices = grid_info["frame_indices"]
+
+                    if llm_vision._DEBUG_ENABLED:
+                        llm_vision._debug_log(f"Processing grid: {os.path.basename(grid_path)}, is_rep={is_rep}, frames={len(frame_indices)}, img_shape={grid_img.shape}")
+
+                    llm_result = llm_vision.call_llm_api(
+                        grid_img, llm.api_key, llm.api_base, llm.model, ocr.lang,
+                        disable_inference=llm.disable_inference,
+                        image_quality=llm.image_quality
+                    )
+
+                    if llm_vision._DEBUG_ENABLED:
+                        llm_vision._debug_log(f"LLM result keys: {list(llm_result.keys())}, entries count: {len(llm_result.get('entries', []))}")
+
+                    results: list[tuple[int, int, str, float]] = []
+                    for entry in llm_result.get("entries", []):
+                        text = entry.get("text", "")
+                        frames = entry.get("frames", [])
+                        if not text or not frames:
+                            if llm_vision._DEBUG_ENABLED:
+                                llm_vision._debug_log(f"Skipping entry: text='{text[:50]}', frames={frames}")
+                            continue
+                        if not isinstance(frames, list):
+                            if llm_vision._DEBUG_ENABLED:
+                                llm_vision._debug_log(f"Skipping entry: frames not a list, type={type(frames)}")
+                            continue
+                        int_frames = []
+                        for f in frames:
+                            try:
+                                int_frames.append(int(f))
+                            except (ValueError, TypeError):
+                                continue
+                        if not int_frames:
+                            if llm_vision._DEBUG_ENABLED:
+                                llm_vision._debug_log(f"Skipping entry: no valid int frames from {frames}")
+                            continue
+                        if llm_vision._DEBUG_ENABLED:
+                            llm_vision._debug_log(f"Valid entry: text='{text[:50]}', int_frames={int_frames}")
+                        if is_rep:
+                            for f in int_frames:
+                                if f < len(frame_indices):
+                                    for orig_idx in frame_indices[f]:
+                                        results.append((orig_idx, zone_idx, text, 1.0))
+                        else:
+                            original_indices = [frame_indices[f] for f in int_frames if f < len(frame_indices)]
+                            for fidx in original_indices:
+                                results.append((fidx, zone_idx, text, 1.0))
+                    if llm_vision._DEBUG_ENABLED:
+                        llm_vision._debug_log(f"Grid done: {os.path.basename(grid_path)}, results={len(results)}")
+                    return results
+                except Exception as e:
+                    if llm_vision._DEBUG_ENABLED:
+                        llm_vision._debug_log(f"EXCEPTION in process_single_grid for {os.path.basename(grid_info.get('path', '?'))}: {type(e).__name__}: {e}")
+                    raise
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=llm.concurrency) as executor:
+                future_to_grid = {executor.submit(process_single_grid, g): g for g in llm_grids}
+
+                for future in concurrent.futures.as_completed(future_to_grid):
+                    try:
+                        results = future.result()
+                        for fidx, zone_idx, text, conf in results:
+                            ocr_outputs[(fidx, zone_idx)] = [(text, conf)]
+                    except Exception as e:
+                        grid_info = future_to_grid[future]
+                        llm_errors.append(f"Grid {os.path.basename(grid_info['path'])}: {e}")
+
+                    with llm_counter_lock:
+                        llm_ocr_counter += 1
+                        print(f"\rStep 3/3: LLM recognition on grid {llm_ocr_counter} of {total_llm_grids}", end="", flush=True)
+
+            print()
+
+            if llm_errors:
+                error_summary = "; ".join(llm_errors[:5])
+                if len(llm_errors) > 5:
+                    error_summary += f" ...and {len(llm_errors) - 5} more"
+                print(f"Warning: {len(llm_errors)} grid(s) failed LLM recognition: {error_summary}", flush=True)
+
+            if not ocr_outputs:
+                print(f"Warning: LLM returned no text for any of the {total_llm_grids} grid(s).", flush=True)
+            else:
+                print(f"LLM recognized text in {len(ocr_outputs)} frame(s).", flush=True)
+
+        else:
+            for filename, results in rec_ocr_outputs.items():
+                if filename not in rec_image_map:
+                    continue
+
+                m = rec_image_map[filename]
+                coord_key = (m["frame_idx"], m["zone_idx"])
+
+                if coord_key not in ocr_outputs:
+                    ocr_outputs[coord_key] = []
+
+                for word_pred in results:
+                    ocr_outputs[coord_key].append([word_pred[0], word_pred[1]])
+
+        return ocr_outputs
+
+    def run_ocr(self, ocr: OcrConfig, time_range: TimeRange, detection: DetectionConfig,
+                frame: FrameConfig, llm: LlmConfig, post: PostProcessConfig) -> None:
+        # Unpack config objects into local variables for minimal diff
+        use_gpu = ocr.use_gpu
+        ocr_engine = ocr.ocr_engine
+        lang = ocr.lang
+        use_angle_cls = ocr.use_angle_cls
+        time_start = time_range.time_start
+        time_end = time_range.time_end
+        conf_threshold = detection.conf_threshold
+        ssim_threshold = detection.ssim_threshold
+        brightness_threshold = detection.brightness_threshold
+        use_fullframe = frame.use_fullframe
+        frames_to_skip = frame.frames_to_skip
+        ocr_image_max_width = frame.ocr_image_max_width
+        crop_zones = frame.crop_zones
+        subtitle_position = frame.subtitle_position
+        llm_api_key = llm.api_key
+        llm_api_base = llm.api_base
+        llm_model = llm.model
+        llm_concurrency = llm.concurrency
+        llm_disable_inference = llm.disable_inference
+        llm_max_frames_per_grid = llm.max_frames_per_grid
+        llm_image_quality = llm.image_quality
+        normalize_to_simplified_chinese = post.normalize_to_simplified_chinese
+
+        conf_threshold_ratio = conf_threshold / 100
+        ssim_threshold_ratio = ssim_threshold / 100
+        self.lang = lang
+        self.use_fullframe = use_fullframe
+        self.validated_zones = []
+        self.pred_frames_zone1 = []
+        self.pred_frames_zone2 = []
+
+        user_start_ms, target_start_ms, target_end_ms, target_end_str = self._resolve_time_range(time_range)
+
+        self._validate_zones(frame)
 
         temp_dir = utils.create_clean_temp_dir()
 
@@ -286,13 +595,7 @@ class Video:
                             zone_idx = idx
 
                             if brightness_threshold is not None:
-                                gray = (
-                                    (img[..., 0].astype(np.uint16) * 77 +
-                                    img[..., 1].astype(np.uint16) * 150 +
-                                    img[..., 2].astype(np.uint16) * 29) >> 8
-                                ).astype(np.uint8)
-                                mask = gray > brightness_threshold
-                                img *= mask[..., None]
+                                utils.apply_brightness_threshold(img, brightness_threshold)
 
                             sample = None
                             if ssim_threshold_ratio < 1:
@@ -380,7 +683,7 @@ class Video:
 
             det_stitch_map: dict[str, list[dict[str, Any]]] = {}
             det_counter = 0
-            det_batches: dict[int, list[Any]] = {0: [], 1: []}
+            det_batches: dict[int, list[Any]] = {z: [] for z in range(len(self.validated_zones))}
 
             prev_samples = [None] * len(self.validated_zones) if self.validated_zones else [None]
             expected_index = None
@@ -446,7 +749,7 @@ class Video:
 
                             expected_index += 1
 
-                    for z_idx in [0, 1]:
+                    for z_idx in range(len(self.validated_zones)):
                         if det_batches[z_idx]:
                             det_counter = flush_batch(det_batches[z_idx], det_counter, z_idx, "det_stitched", det_stitched_dir, det_stitch_map)
 
@@ -544,7 +847,7 @@ class Video:
             print()
 
             # Parse JSON Outputs and unstitch coordinates
-            parsed_detections: dict[int, list[Any]] = {0: [], 1: []}
+            parsed_detections: dict[int, list[Any]] = {z: [] for z in range(len(self.validated_zones))}
 
             for json_file in os.listdir(det_res_dir):
                 if not json_file.endswith('.json'):
@@ -801,279 +1104,9 @@ class Video:
             if rec_counter == 0 and not llm_grids:
                 return
 
-            # --------------------------------------------------------
-            # Recognition Pass
-            # --------------------------------------------------------
-            rec_ocr_outputs: dict[str, list[Any]] = {}
-            ocr_image_index = 0
+            ocr_outputs = self._run_recognition_pass(ocr, llm, rec_images_dir, rec_image_map, llm_grids)
 
-            if ocr_engine == "google_lens":
-                args = [
-                    self.google_lens_path,
-                    rec_images_dir,
-                    self.lang,
-                    "--get-coords",
-                    "--oneline",
-                    "-q",
-                ]
-
-                print("Starting Google Lens CLI...", flush=True)
-
-                for line in utils.stream_cli_process(args, "google_lens_error.log", cwd=os.path.dirname(self.google_lens_path)):
-                    line = line.strip()
-                    if not line or not line.startswith('{') or '"file"' not in line:
-                        continue
-
-                    data = json.loads(line)
-                    stitched_filename = data["file"]
-
-                    if stitched_filename not in rec_image_map:
-                        continue
-
-                    grid_w = data["dimensions"]["original_width"]
-                    grid_h = data["dimensions"]["original_height"]
-
-                    results: list[list[Any]] = []
-                    for word_item in data["words"]:
-                        text = word_item["text"]
-                        separator = word_item["separator"]
-                        geom = word_item["geometry"]
-
-                        if not geom:
-                            continue
-
-                        cx = geom["center_x"] * grid_w
-                        cy = geom["center_y"] * grid_h
-                        w = geom["width"] * grid_w
-                        h = geom["height"] * grid_h
-
-                        x1, x2 = cx - w / 2.0, cx + w / 2.0
-                        y1, y2 = cy - h / 2.0, cy + h / 2.0
-                        box = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
-
-                        combined_text = text + separator
-                        results.append([box, (combined_text, 1.0)])
-
-                    rec_ocr_outputs[stitched_filename] = results
-                    ocr_image_index += 1
-                    print(f"\rStep 3/3: Performing OCR on image {ocr_image_index} of {len(rec_image_map)}", end="", flush=True)
-                print()
-
-            elif ocr_engine == "paddleocr":
-                args = [
-                    self.paddleocr_path,
-                    "ocr",
-                    "--input", rec_images_dir,
-                    "--device", "gpu" if use_gpu else "cpu",
-                    "--use_textline_orientation", "true" if use_angle_cls else "false",
-                    "--use_doc_orientation_classify", "false",
-                    "--use_doc_unwarping", "false",
-                    "--lang", self.lang,
-                    "--text_detection_model_dir", self.det_model_dir,
-                    "--text_detection_model_name", os.path.basename(self.det_model_dir),
-                    "--text_recognition_model_dir", self.rec_model_dir,
-                    "--text_recognition_model_name", os.path.basename(self.rec_model_dir),
-                ]
-
-                if use_angle_cls:
-                    args += ["--textline_orientation_model_dir", self.cls_model_dir]
-                    args += ["--textline_orientation_model_name", os.path.basename(self.cls_model_dir)]
-
-                print("Starting PaddleOCR...", flush=True)
-
-                current_image = None
-                for line in utils.stream_cli_process(args, "paddleocr_error.log", cwd=os.path.dirname(self.paddleocr_path)):
-                    line = line.strip()
-
-                    if "ppocr INFO: **********" in line:
-                        match = re.search(r"\*+(.+?)\*+$", line)
-                        if match:
-                            current_image = os.path.basename(match.group(1)).strip()
-                            rec_ocr_outputs[current_image] = []
-                            ocr_image_index += 1
-                            print(f"\rStep 3/3: Performing OCR on image {ocr_image_index} of {len(rec_image_map)}", end="", flush=True)
-                    elif current_image and '[[' in line:
-                        try:
-                            match = re.search(r"ppocr INFO:\s*(\[.+\])", line)
-                            if match:
-                                parsed = ast.literal_eval(match.group(1))
-                                rec_ocr_outputs[current_image].append(parsed)
-                        except Exception as e:
-                            print(f"Error parsing OCR for {current_image}: {e}", flush=True)
-                print()
-
-            # Map 2D coordinates
-            ocr_outputs: dict[tuple[int, int], list[Any]] = {}
-
-            if ocr_engine == "llm_vision":
-                # LLM Vision: process collected grids through LLM API with concurrency
-                total_llm_grids = len(llm_grids)
-                print(f"Starting LLM Vision recognition on {total_llm_grids} grid(s) (concurrency={llm_concurrency})...", flush=True)
-
-                # Write initial log entry (using _llm_log defined below)
-
-                llm_ocr_counter = 0
-                llm_errors: list[str] = []
-                llm_counter_lock = threading.Lock()
-
-                # LLM debug log path — use system temp (NOT temp_dir, which gets deleted)
-                import tempfile as _tf_llm
-                _llm_log_path = os.path.join(_tf_llm.gettempdir(), "videocr_llm_debug.log")
-
-                def _llm_log(msg: str):
-                    """Thread-safe log writer."""
-                    import datetime as _dt
-                    try:
-                        with open(_llm_log_path, "a", encoding="utf-8") as f:
-                            f.write(f"[{_dt.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
-                    except Exception:
-                        pass
-
-                _llm_log(f"=== LLM Vision Start: {total_llm_grids} grids, api_base={llm_api_base}, model={llm_model} ===")
-
-                # Verify grid files exist on disk (they were written directly, not via write_queue)
-                missing = [g["path"] for g in llm_grids if not os.path.exists(g["path"])]
-                if missing:
-                    _llm_log(f"ERROR: {len(missing)} grid files missing: {missing[:3]}")
-                    print(f"Warning: {len(missing)} grid image files not found on disk. LLM recognition may fail.", flush=True)
-
-                def process_single_grid(grid_info: dict[str, Any]) -> list[tuple[int, int, str, float]]:
-                    """Process one grid, return list of (frame_idx, zone_idx, text, confidence)."""
-                    try:
-                        grid_path = grid_info["path"]
-                        _llm_log(f"Starting grid: {os.path.basename(grid_path)}, exists={os.path.exists(grid_path)}")
-
-                        grid_img = np.array(Image.open(grid_path))
-                        zone_idx = grid_info["zone_idx"]
-                        is_rep = grid_info.get("is_representative", False)
-                        frame_indices = grid_info["frame_indices"]
-
-                        _llm_log(f"Processing grid: {os.path.basename(grid_path)}, is_rep={is_rep}, frames={len(frame_indices)}, img_shape={grid_img.shape}")
-
-                        llm_result = llm_vision.call_llm_api(
-                            grid_img, llm_api_key, llm_api_base, llm_model, lang,
-                            disable_inference=llm_disable_inference,
-                            image_quality=llm_image_quality
-                        )
-
-                        _llm_log(f"LLM result keys: {list(llm_result.keys())}, entries count: {len(llm_result.get('entries', []))}")
-
-                        results: list[tuple[int, int, str, float]] = []
-                        for entry in llm_result.get("entries", []):
-                            text = entry.get("text", "")
-                            frames = entry.get("frames", [])
-                            if not text or not frames:
-                                _llm_log(f"Skipping entry: text='{text[:50]}', frames={frames}")
-                                continue
-                            # Ensure frames is a list of integers
-                            if not isinstance(frames, list):
-                                _llm_log(f"Skipping entry: frames not a list, type={type(frames)}")
-                                continue
-                            # Convert to integers if needed (LLM might return strings)
-                            int_frames = []
-                            for f in frames:
-                                try:
-                                    int_frames.append(int(f))
-                                except (ValueError, TypeError):
-                                    continue
-                            if not int_frames:
-                                _llm_log(f"Skipping entry: no valid int frames from {frames}")
-                                continue
-                            _llm_log(f"Valid entry: text='{text[:50]}', int_frames={int_frames}")
-                            if is_rep:
-                                # frame_indices is list of lists: each grid position → batch of original frame indices
-                                for f in int_frames:
-                                    if f < len(frame_indices):
-                                        for orig_idx in frame_indices[f]:
-                                            results.append((orig_idx, zone_idx, text, 1.0))
-                            else:
-                                original_indices = [frame_indices[f] for f in int_frames if f < len(frame_indices)]
-                                for fidx in original_indices:
-                                    results.append((fidx, zone_idx, text, 1.0))
-                        _llm_log(f"Grid done: {os.path.basename(grid_path)}, results={len(results)}")
-                        return results
-                    except Exception as e:
-                        _llm_log(f"EXCEPTION in process_single_grid for {os.path.basename(grid_info.get('path', '?'))}: {type(e).__name__}: {e}")
-                        raise
-
-                with concurrent.futures.ThreadPoolExecutor(max_workers=llm_concurrency) as executor:
-                    future_to_grid = {executor.submit(process_single_grid, g): g for g in llm_grids}
-
-                    for future in concurrent.futures.as_completed(future_to_grid):
-                        try:
-                            results = future.result()
-                            for fidx, zone_idx, text, conf in results:
-                                ocr_outputs[(fidx, zone_idx)] = [(text, conf)]
-                        except Exception as e:
-                            grid_info = future_to_grid[future]
-                            llm_errors.append(f"Grid {os.path.basename(grid_info['path'])}: {e}")
-
-                        with llm_counter_lock:
-                            llm_ocr_counter += 1
-                            print(f"\rStep 3/3: LLM recognition on grid {llm_ocr_counter} of {total_llm_grids}", end="", flush=True)
-
-                print()
-
-                if llm_errors:
-                    error_summary = "; ".join(llm_errors[:5])
-                    if len(llm_errors) > 5:
-                        error_summary += f" ...and {len(llm_errors) - 5} more"
-                    print(f"Warning: {len(llm_errors)} grid(s) failed LLM recognition: {error_summary}", flush=True)
-
-                if not ocr_outputs:
-                    print(f"Warning: LLM returned no text for any of the {total_llm_grids} grid(s).", flush=True)
-                else:
-                    print(f"LLM recognized text in {len(ocr_outputs)} frame(s).", flush=True)
-
-            else:
-                for filename, results in rec_ocr_outputs.items():
-                    if filename not in rec_image_map:
-                        continue
-
-                    m = rec_image_map[filename]
-                    coord_key = (m["frame_idx"], m["zone_idx"])
-
-                    if coord_key not in ocr_outputs:
-                        ocr_outputs[coord_key] = []
-
-                    for word_pred in results:
-                        ocr_outputs[coord_key].append([word_pred[0], word_pred[1]])
-
-            active_frame_coords = surviving_frames_meta | empty_frames_meta
-
-            frame_predictions_dict: dict[int, dict[int, PredictedFrames]] = {0: {}, 1: {}}
-
-            for frame_index, zone_index in active_frame_coords:
-                ocr_result = ocr_outputs.get((frame_index, zone_index), [])
-                pred_data = [ocr_result] if ocr_result else [[]]
-
-                predicted_frame = PredictedFrames(ocr_engine, frame_index, pred_data, conf_threshold_ratio, zone_index, lang, normalize_to_simplified_chinese)
-                frame_predictions_dict[zone_index][frame_index] = predicted_frame
-
-            frame_predictions_list: dict[int, list[PredictedFrames]] = {}
-
-            for zone_idx in frame_predictions_dict:
-                frames = sorted(frame_predictions_dict[zone_idx].values(), key=lambda f: f.start_index)
-
-                if not frames:
-                    continue
-
-                for i in range(len(frames) - 1):
-                    current_pred = frames[i]
-                    next_pred = frames[i + 1]
-
-                    current_pred.end_index = next_pred.start_index - 1
-
-                if frames:
-                    frames[-1].end_index = ocr_end - 1
-
-                frame_predictions_list[zone_idx] = frames
-
-            self.pred_frames_zone1 = frame_predictions_list.get(0, [])
-            self.pred_frames_zone2 = frame_predictions_list.get(1, [])
-
-            if not self.pred_frames_zone1 and not self.pred_frames_zone2:
-                print("Warning: No subtitle frames were generated.", flush=True)
+            self._build_frame_predictions(ocr_outputs, surviving_frames_meta, empty_frames_meta, ocr, post, conf_threshold_ratio, ocr_end)
 
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)

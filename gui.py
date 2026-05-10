@@ -39,7 +39,7 @@ import time
 import tkinter.font as tkFont
 import urllib.request
 import webbrowser
-from typing import IO, Any, cast
+from typing import Any, cast
 
 import av
 import numpy as np
@@ -72,32 +72,22 @@ except ImportError:
     PluginDownloadTask = None  # type: ignore
     get_install_dir = None  # type: ignore
 
+from videocr.lang_dictionaries import (
+    GOOGLE_LENS_LANGUAGES_LIST, PADDLEOCR_LANGUAGES_LIST, PADDLE_TO_ISO_MAP,
+)
+from videocr.utils import (
+    apply_brightness_threshold, frame_to_array,
+    get_seconds_from_srt_timestamp as parse_srt_time_to_seconds,
+    is_valid_time_format, log_error as _log_error_to_file, read_pipe,
+    time_string_to_seconds, validate_time_parts,
+)
 
-# -- Save errors to log file ---
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 def log_error(message: str, log_name: str = "error_log.txt") -> str:
-    """Logs error messages to a platform-appropriate log file location."""
-    portable_flag = os.path.join(APP_DIR, 'portable_mode.txt')
-
-    if os.path.exists(portable_flag):
-        log_dir = APP_DIR
-    else:
-        if sys.platform == "win32":
-            log_dir = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.join(str(pathlib.Path.home()), 'AppData', 'Local'), "VideOCR")
-        else:
-            xdg_state = os.environ.get("XDG_STATE_HOME")
-            if xdg_state:
-                log_dir = os.path.join(xdg_state, "VideOCR")
-            else:
-                log_dir = os.path.join(str(pathlib.Path.home()), ".local", "state", "VideOCR")
-
-    os.makedirs(log_dir, exist_ok=True)
-
-    log_path = os.path.join(log_dir, log_name)
-    timestamp = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(f"{timestamp} {message}\n")
-
-    return log_path
+    """Convenience wrapper that passes APP_DIR for portable mode detection."""
+    return _log_error_to_file(message, log_name, app_dir=APP_DIR)
 
 
 # --- Make application DPI aware ---
@@ -233,7 +223,6 @@ def get_config_file_path() -> str:
 
 # --- Configuration ---
 PROGRAM_VERSION = __version__
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LANGUAGES_DIR = os.path.join(APP_DIR, 'languages')
 VIDEOCR_PATH = find_videocr_program()
 DEFAULT_OUTPUT_SRT = ""
@@ -303,128 +292,21 @@ LANGUAGE_CODE_TO_NATIVE_NAME = {
     'vi': 'Tiếng Việt',
 }
 
-# --- Language Data ---
-PADDLEOCR_LANGUAGES_LIST = [
-    ('Abaza', 'abq'), ('Adyghe', 'ady'), ('Afrikaans', 'af'), ('Albanian', 'sq'),
-    ('Angika', 'ang'), ('Arabic', 'ar'), ('Avar', 'ava'), ('Azerbaijani', 'az'),
-    ('Baluchi', 'bal'), ('Bashkir', 'ba'), ('Basque', 'eu'), ('Belarusian', 'be'),
-    ('Bhojpuri', 'bho'), ('Bihari', 'bh'), ('Bosnian', 'bs'), ('Bulgarian', 'bg'),
-    ('Buryat', 'bua'), ('Catalan', 'ca'), ('Chechen', 'che'), ('Chinese & English', 'ch'),
-    ('Chinese Traditional', 'chinese_cht'), ('Chuvash', 'cv'), ('Croatian', 'hr'),
-    ('Czech', 'cs'), ('Danish', 'da'), ('Dargwa', 'dar'), ('Dutch', 'nl'),
-    ('English', 'en'), ('Estonian', 'et'), ('Finnish', 'fi'), ('French', 'fr'),
-    ('Galician', 'gl'), ('Georgian', 'ka'), ('German', 'german'), ('Goan Konkani', 'gom'),
-    ('Greek', 'el'), ('Haryanvi', 'bgc'), ('Hindi', 'hi'), ('Hungarian', 'hu'),
-    ('Icelandic', 'is'), ('Indonesian', 'id'), ('Ingush', 'inh'), ('Irish', 'ga'),
-    ('Italian', 'it'), ('Japanese', 'japan'), ('Kabardian', 'kbd'), ('Kalmyk', 'xal'),
-    ('Karakalpak', 'kaa'), ('Kazakh', 'kk'), ('Komi', 'kv'), ('Korean', 'korean'),
-    ('Kurdish', 'ku'), ('Kyrgyz', 'ky'), ('Lak', 'lbe'), ('Latin', 'la'),
-    ('Latvian', 'lv'), ('Lezghian', 'lez'), ('Lithuanian', 'lt'), ('Luxembourgish', 'lb'),
-    ('Macedonian', 'mk'), ('Magahi', 'mah'), ('Maithili', 'mai'), ('Malay', 'ms'),
-    ('Maltese', 'mt'), ('Maori', 'mi'), ('Marathi', 'mr'), ('Meadow Mari', 'mhr'),
-    ('Moldovan', 'mo'), ('Mongolian', 'mn'), ('Nagpuri', 'sck'), ('Nepali', 'ne'),
-    ('Newari', 'new'), ('Norwegian', 'no'), ('Occitan', 'oc'), ('Ossetian', 'os'),
-    ('Pali', 'pi'), ('Pashto', 'ps'), ('Persian', 'fa'), ('Polish', 'pl'),
-    ('Portuguese', 'pt'), ('Quechua', 'qu'), ('Romansh', 'rm'), ('Romanian', 'ro'),
-    ('Russian', 'ru'), ('Sanskrit', 'sa'), ('Serbian(cyrillic)', 'rs_cyrillic'),
-    ('Serbian(latin)', 'rs_latin'), ('Sindhi', 'sd'), ('Slovak', 'sk'),
-    ('Slovenian', 'sl'), ('Spanish', 'es'), ('Swahili', 'sw'), ('Swedish', 'sv'),
-    ('Tabassaran', 'tab'), ('Tagalog', 'tl'), ('Tajik', 'tg'), ('Tamil', 'ta'),
-    ('Tatar', 'tt'), ('Telugu', 'te'), ('Thai', 'th'), ('Turkish', 'tr'),
-    ('Tuvan', 'tyv'), ('Udmurt', 'udm'), ('Ukrainian', 'uk'), ('Urdu', 'ur'),
-    ('Uyghur', 'ug'), ('Uzbek', 'uz'), ('Vietnamese', 'vi'), ('Welsh', 'cy'),
-    ('Sakha', 'sah'),
-]
-PADDLEOCR_LANGUAGES_LIST.sort(key=lambda x: x[0])
+# --- Language Data (imported from lang_dictionaries, derived lookups computed here) ---
 paddle_display_names = [lang[0] for lang in PADDLEOCR_LANGUAGES_LIST]
 paddle_abbr_lookup = {name: abbr for name, abbr in PADDLEOCR_LANGUAGES_LIST}
 
-GOOGLE_LENS_LANGUAGES_LIST = [
-    ("Afrikaans", "af"), ("Albanian", "sq"), ("Arabic", "ar"), ("Armenian", "hy"),
-    ("Belarusian", "be"), ("Bengali", "bn"), ("Bulgarian", "bg"), ("Catalan", "ca"),
-    ("Chinese", "zh"), ("Croatian", "hr"), ("Czech", "cs"), ("Danish", "da"),
-    ("Dutch", "nl"), ("English", "en"), ("Estonian", "et"), ("Filipino", "fil"),
-    ("Finnish", "fi"), ("French", "fr"), ("German", "de"), ("Greek", "el"),
-    ("Gujarati", "gu"), ("Hebrew", "iw"), ("Hindi", "hi"), ("Hungarian", "hu"),
-    ("Icelandic", "is"), ("Indonesian", "id"), ("Italian", "it"), ("Japanese", "ja"),
-    ("Kannada", "kn"), ("Khmer", "km"), ("Korean", "ko"), ("Lao", "lo"),
-    ("Latvian", "lv"), ("Lithuanian", "lt"), ("Macedonian", "mk"), ("Malay", "ms"),
-    ("Malayalam", "ml"), ("Marathi", "mr"), ("Nepali", "ne"), ("Norwegian", "no"),
-    ("Persian", "fa"), ("Polish", "pl"), ("Portuguese", "pt"), ("Punjabi", "pa"),
-    ("Romanian", "ro"), ("Russian", "ru"), ("Russian (PETR1708)", "ru-PETR1708"),
-    ("Serbian", "sr"), ("Serbian (Latin)", "sr-Latn"), ("Slovak", "sk"), ("Slovenian", "sl"),
-    ("Spanish", "es"), ("Swedish", "sv"), ("Tagalog", "tl"), ("Tamil", "ta"),
-    ("Telugu", "te"), ("Thai", "th"), ("Turkish", "tr"), ("Ukrainian", "uk"),
-    ("Vietnamese", "vi"), ("Yiddish", "yi"), ("Amharic", "am"), ("Ancient Greek", "grc"),
-    ("Assamese", "as"), ("Azerbaijani", "az"), ("Azerbaijani (Cyrl)", "az-Cyrl"), ("Basque", "eu"),
-    ("Bosnian", "bs"), ("Burmese", "my"), ("Cebuano", "ceb"), ("Cherokee", "chr"),
-    ("Dhivehi", "dv"), ("Dzonkha", "dz"), ("Esperanto", "eo"), ("Galician", "gl"),
-    ("Georgian", "ka"), ("Haitian Creole", "ht"), ("Irish", "ga"), ("Javanese", "jv"),
-    ("Kazakh", "kk"), ("Kirghiz", "ky"), ("Latin", "la"), ("Maltese", "mt"),
-    ("Mongolian", "mn"), ("Oriya", "or"), ("Pashto", "ps"), ("Sanskrit", "sa"),
-    ("Sinhala", "si"), ("Swahili", "sw"), ("Syriac", "syr"), ("Tibetan", "bo"),
-    ("Tigirinya", "ti"), ("Urdu", "ur"), ("Uzbek", "uz"), ("Uzbek (Cyrl)", "uz-Cyrl"),
-    ("Welsh", "cy"), ("Zulu", "zu"), ("Acehnese", "ace"), ("Acholi", "ach"),
-    ("Adangme", "ada"), ("Akan", "ak"), ("Algonquinian", "alg"), ("Araucanian/Mapuche", "arn"),
-    ("Asturian", "ast"), ("Athabaskan", "ath"), ("Aymara", "ay"), ("Balinese", "ban"),
-    ("Bambara", "bm"), ("Bantu", "bnt"), ("Bashkir", "ba"), ("Batak", "btk"),
-    ("Bemba", "bem"), ("Bikol", "bik"), ("Bislama", "bi"), ("Breton", "br"),
-    ("Chechen", "ce"), ("Chinese (Simplified)", "zh-Hans"), ("Chinese (Traditional)", "zh-Hant"), ("Chinese (Hong Kong)", "zh-Hant-HK"),
-    ("Choctaw", "cho"), ("Chuvash", "cv"), ("Cree", "cr"), ("Creek", "mus"),
-    ("Crimean Tatar", "crh"), ("Dakota", "dak"), ("Duala", "dua"), ("Efik", "efi"),
-    ("English (British)", "en-GB"), ("Ewe", "ee"), ("Faroese", "fo"), ("Fijian", "fj"),
-    ("Fon", "fon"), ("French (Canadian)", "fr-CA"), ("Fulah", "ff"), ("Ga", "gaa"),
-    ("Ganda", "lg"), ("Gayo", "gay"), ("Gilbertese", "gil"), ("Gothic", "got"),
-    ("Guarani", "gn"), ("Hausa", "ha"), ("Hawaiian", "haw"), ("Herero", "hz"),
-    ("Hiligaynon", "hil"), ("Iban", "iba"), ("Igbo", "ig"), ("Iloko", "ilo"),
-    ("Kabyle", "kab"), ("Kachin", "kac"), ("Kalaallisut", "kl"), ("Kamba", "kam"),
-    ("Kanuri", "kr"), ("Kara-Kalpak", "kaa"), ("Khasi", "kha"), ("Kikuyu", "ki"),
-    ("Kinyarwanda", "rw"), ("Komi", "kv"), ("Kongo", "kg"), ("Kosraean", "kos"),
-    ("Kuanyama", "kj"), ("Lingala", "ln"), ("Low German", "nds"), ("Lozi", "loz"),
-    ("Luba-Katanga", "lu"), ("Luo", "luo"), ("Madurese", "mad"), ("Malagasy", "mg"),
-    ("Mandingo", "man"), ("Manx", "gv"), ("Maori", "mi"), ("Marshallese", "mh"),
-    ("Mende", "men"), ("Middle English", "enm"), ("Middle High German", "gmh"), ("Minangkabau", "min"),
-    ("Mohawk", "moh"), ("Mongo", "lol"), ("Nahuatl", "nah"), ("Navajo", "nv"),
-    ("Ndonga", "ng"), ("Niuean", "niu"), ("North Ndebele", "nd"), ("Northern Sotho", "nso"),
-    ("Nyanja", "ny"), ("Nyankole", "nyn"), ("Nyasa Tonga", "tog"), ("Nzima", "nzi"),
-    ("Occitan", "oc"), ("Ojibwa", "oj"), ("Old English", "ang"), ("Old French", "fro"),
-    ("Old High German", "goh"), ("Old Norse", "non"), ("Old Provencal", "pro"), ("Ossetic", "os"),
-    ("Pampanga", "pam"), ("Pangasinan", "pag"), ("Papiamento", "pap"), ("Portuguese (European)", "pt-PT"),
-    ("Quechua", "qu"), ("Romansh", "rm"), ("Romany", "rom"), ("Rundi", "rn"),
-    ("Sakha", "sah"), ("Samoan", "sm"), ("Sango", "sg"), ("Scots", "sco"),
-    ("Scottish Gaelic", "gd"), ("Shona", "sn"), ("Songhai", "son"), ("Southern Sotho", "st"),
-    ("Spanish (Latin American)", "es-419"), ("Sundanese", "su"), ("Swati", "ss"), ("Tahitian", "ty"),
-    ("Tajik", "tg"), ("Tatar", "tt"), ("Temne", "tem"), ("Tongan", "to"),
-    ("Tsonga", "ts"), ("Tswana", "tn"), ("Turkmen", "tk"), ("Udmurt", "udm"),
-    ("Venda", "ve"), ("Votic", "vot"), ("Western Frisian", "fy"), ("Wolof", "wo"),
-    ("Xhosa", "xh"), ("Yoruba", "yo"), ("Zapotec", "zap")
-]
-GOOGLE_LENS_LANGUAGES_LIST.sort(key=lambda x: x[0])
 lens_display_names = [lang[0] for lang in GOOGLE_LENS_LANGUAGES_LIST]
 lens_abbr_lookup = {name: abbr for name, abbr in GOOGLE_LENS_LANGUAGES_LIST}
 
-OCR_ENGINES = [
+DEFAULT_ENGINES = [
     'PaddleOCR (Det. + Rec.)',
-    'PaddleOCR (Det.) + Google Lens (Rec.)',
     'PaddleOCR (Det.) + LLM Vision (Rec.)'
 ]
-
-# Mapping from PaddleOCR internal codes to standard ISO 639 codes for deviating abbreviations
-PADDLE_TO_ISO_MAP = {
-    'ch': 'zh',
-    'chinese_cht': 'zh',
-    'german': 'de',
-    'japan': 'ja',
-    'korean': 'ko',
-    'rs_cyrillic': 'sr',
-    'rs_latin': 'sr',
-    'ang': 'anp',
-    'mah': 'mag',
-    'mo': 'ro',
-    # Prefer 2-Letter Codes
-    'ava': 'av',
-    'che': 'ce',
-}
+ALL_ENGINES = DEFAULT_ENGINES + [
+    'PaddleOCR (Det.) + Google Lens (Rec.)',
+]
+OCR_ENGINES = DEFAULT_ENGINES
 
 # --- Subtitle Position Data ---
 SUBTITLE_POSITIONS_LIST = [
@@ -504,13 +386,106 @@ resized_frame_height = 0
 image_offset_x = 0
 image_offset_y = 0
 gui_scale_multiplier = get_gui_scaling_multiplier()
-graph_size = get_scaled_graph_size(custom_scale=gui_scale_multiplier, base_w=672, base_h=378)
+graph_size = get_scaled_graph_size(custom_scale=gui_scale_multiplier, base_w=700, base_h=400)
 current_image_bytes = None
-prog = None
-previous_taskbar_state = None
 LANG: dict[str, str] = {}
 current_wake_lock: Any = None
 gui_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+
+# --- State Encapsulation ---
+class VideoState:
+    """Mutable state tracking the currently loaded video."""
+    __slots__ = ('path', 'original_width', 'original_height', 'duration_ms', 'current_time_ms', 'current_image_bytes')
+
+    def __init__(self) -> None:
+        self.path: str | None = None
+        self.original_width: int = 0
+        self.original_height: int = 0
+        self.duration_ms: float = 0.0
+        self.current_time_ms: float = 0.0
+        self.current_image_bytes: bytes | None = None
+
+    def reset(self) -> None:
+        self.path = None
+        self.original_width = 0
+        self.original_height = 0
+        self.duration_ms = 0.0
+        self.current_time_ms = 0.0
+        self.current_image_bytes = None
+
+
+class DisplayState:
+    """Mutable state tracking the resized image display dimensions."""
+    __slots__ = ('resized_width', 'resized_height', 'offset_x', 'offset_y', 'graph_size')
+
+    def __init__(self, graph_size: tuple[int, int]) -> None:
+        self.resized_width: int = 0
+        self.resized_height: int = 0
+        self.offset_x: int = 0
+        self.offset_y: int = 0
+        self.graph_size: tuple[int, int] = graph_size
+
+    def update_from_frame(self, orig_w: int, orig_h: int, graph_w: int, graph_h: int) -> tuple[int, int, int, int]:
+        """Calculate resized dimensions and offsets to fit frame in graph. Returns (res_w, res_h, off_x, off_y)."""
+        if orig_w == 0 or orig_h == 0:
+            return 0, 0, 0, 0
+        scale = min(graph_w / orig_w, graph_h / orig_h)
+        self.resized_width = int(orig_w * scale)
+        self.resized_height = int(orig_h * scale)
+        self.offset_x = (graph_w - self.resized_width) // 2
+        self.offset_y = (graph_h - self.resized_height) // 2
+        return self.resized_width, self.resized_height, self.offset_x, self.offset_y
+
+
+class TaskbarManager:
+    """Manages Windows taskbar progress indicator."""
+    __slots__ = ('_prog', '_previous_state')
+
+    def __init__(self) -> None:
+        self._prog: Any = None
+        self._previous_state: str | None = None
+
+    def init(self, window: Any) -> None:
+        if sys.platform == 'win32':
+            self._prog = PyTaskbar.Progress(int(window.TKroot.wm_frame(), 16))
+            self._prog.init()
+            self._prog.setState('normal')
+
+    def update(self, state: str | None = None, progress: int | None = None) -> None:
+        if self._prog is None:
+            return
+        if state and state != self._previous_state:
+            self._previous_state = state
+            self._prog.setState(state)
+        if progress is not None:
+            self._prog.setProgress(progress)
+
+
+class ProgressTracker:
+    """Tracks ETA and progress state across videocr processing steps."""
+    __slots__ = ('_last_key', '_start_time', '_last_update_time', '_start_percent', '_last_eta', '_last_taskbar_val')
+
+    def __init__(self) -> None:
+        self._last_key: str | None = None
+        self._start_time: float | None = None
+        self._last_update_time: float = 0
+        self._start_percent: float = 0.0
+        self._last_eta: str = ""
+        self._last_taskbar_val: int = -1
+
+    def reset(self, label_format_key: str, current_time: float, current_percent: float) -> None:
+        """Reset tracker when switching to a new processing step."""
+        self._last_key = label_format_key
+        self._start_time = current_time
+        self._last_update_time = 0
+        self._start_percent = current_percent
+
+
+video_state = VideoState()
+display_state = DisplayState(graph_size)
+taskbar = TaskbarManager()
+progress_tracker = ProgressTracker()
 
 
 # --- i18n Language Functions ---
@@ -575,8 +550,6 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         '-LBL-SUB_POS-': {'text': 'lbl_sub_pos', 'tooltip': 'tip_sub_pos'},
         '-SUBTITLE_POS_COMBO-': {'tooltip': 'tip_sub_pos'},
         '-BTN-HELP-': {'text': 'btn_how_to_use'},
-        '-LBL-SEEK-': {'text': 'lbl_seek'},
-        '-LBL-CROP_BOX-': {'text': 'lbl_crop_box'},
         '-CROP_COORDS-': {'text': 'crop_not_set'},
         '-TIME_TEXT-': {'text': 'time_text_empty'},
         '-BTN-RUN-': {'text': 'btn_run'},
@@ -585,10 +558,25 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         '-LBL-PROGRESS-': {'text': 'lbl_progress'},
         '-LBL-LOG-': {'text': 'lbl_log'},
         '-LBL-WHEN_READY-': {'text': 'lbl_when_ready'},
+        '-BTN-TOGGLE-LOG-': {'text': 'btn_expand_log'},
+        '-BTN-OPEN-OUTPUT-': {'text': 'btn_open_output'},
+        '-FRM-VIDEO-INFO-': {'text': 'frm_video_info'},
+        '-LBL-RES-': {'text': 'lbl_resolution'},
+        '-LBL-DUR-': {'text': 'lbl_duration'},
+        '-LBL-FPS-': {'text': 'lbl_fps'},
+        '-LBL-SIZE-': {'text': 'lbl_file_size'},
+        '-FRM-TASK-STATUS-': {'text': 'frm_task_status'},
+        '-LBL-ENGINE-': {'text': 'lbl_engine'},
+        '-LBL-STATUS-': {'text': 'lbl_status'},
+        '-LBL-GPU-': {'text': 'lbl_gpu'},
+        '-FRM-QUICK-ACTIONS-': {'text': 'frm_quick_actions'},
+        '-LBL-CROP-': {'text': 'lbl_crop'},
+        '-LBL-SEEK-LABEL-': {'text': 'lbl_seek_label'},
 
         # Tab 2
         '-TAB-ADVANCED-': {'text': 'tab_advanced'},
-        '-LBL-OCR_SETTINGS-': {'text': 'lbl_ocr_settings'},
+        '-ADVANCED-TITLE-': {'text': 'tab_advanced'},
+        '-FRM-OCR-SETTINGS-': {'text': 'lbl_ocr_settings'},
         '-LBL-TIME_START-': {'text': 'lbl_time_start', 'tooltip': 'tip_time_start'},
         '--time_start': {'tooltip': 'tip_time_start'},
         '-LBL-TIME_END-': {'text': 'lbl_time_end', 'tooltip': 'tip_time_end'},
@@ -620,7 +608,8 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         '--use_angle_cls': {'text': 'chk_angle_cls', 'tooltip': 'tip_angle_cls'},
         '--post_processing': {'text': 'chk_post_processing', 'tooltip': 'tip_post_processing'},
         '--use_server_model': {'text': 'chk_server_model', 'tooltip': 'tip_server_model'},
-        '-LBL-LLM_SETTINGS-': {'text': 'lbl_llm_settings'},
+        '--enable_google_lens': {'text': 'chk_enable_google_lens', 'tooltip': 'tip_enable_google_lens'},
+        '-FRM-LLM-SETTINGS-': {'text': 'lbl_llm_settings'},
         '-LBL-LLM_API_KEY-': {'text': 'lbl_llm_api_key', 'tooltip': 'tip_llm_api_key'},
         '--llm_api_key': {'tooltip': 'tip_llm_api_key'},
         '-LBL-LLM_API_BASE-': {'text': 'lbl_llm_api_base', 'tooltip': 'tip_llm_api_base'},
@@ -632,10 +621,10 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         '--llm_disable_inference': {'text': 'lbl_llm_disable_inference', 'tooltip': 'tip_llm_disable_inference'},
         '-LBL-LLM_IMAGE_QUALITY-': {'text': 'lbl_llm_image_quality', 'tooltip': 'tip_llm_image_quality'},
         '--llm_image_quality': {'tooltip': 'tip_llm_image_quality'},
-        '-LBL-DOWNLOAD_SETTINGS-': {'text': 'lbl_download_settings'},
+        '-FRM-COMPONENT-STATUS-': {'text': 'lbl_download_settings'},
         '-LBL-DL_SOURCE-': {'text': 'lbl_dl_source', 'tooltip': 'tip_dl_source'},
         '-DL_SOURCE-': {'tooltip': 'tip_dl_source'},
-        '-LBL-VIDEOCR_SETTINGS-': {'text': 'lbl_videocr_settings'},
+        '-FRM-APP-SETTINGS-': {'text': 'lbl_videocr_settings'},
         '-LBL-UI_LANG-': {'text': 'lbl_ui_lang', 'tooltip': 'tip_ui_lang'},
         '-UI_LANG_COMBO-': {'tooltip': 'tip_ui_lang'},
         '-LBL-GUI_SCALING-': {'text': 'lbl_gui_scaling', 'tooltip': 'tip_gui_scaling'},
@@ -655,8 +644,6 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         # Tab 3
         '-TAB-ABOUT-': {'text': 'tab_about'},
         '-LBL-ABOUT_VERSION-': {'text': 'lbl_about_version'},
-        '-LBL-GET_NEWEST-': {'text': 'lbl_get_newest'},
-        '-LBL-BUG_REPORT-': {'text': 'lbl_bug_report'},
     }
 
     tab_group = window['-TABGROUP-']
@@ -675,7 +662,9 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
                 new_content = LANG[lang_keys['text']]
                 if lang_keys['text'] == 'lbl_about_version':
                     new_content = new_content.format(version=PROGRAM_VERSION)
-                if isinstance(element, (sg.Button, sg.Checkbox)):
+                if isinstance(element, sg.Frame):
+                    element.Widget.config(text=new_content)
+                elif isinstance(element, (sg.Button, sg.Checkbox)):
                     element.update(text=new_content)
                 else:
                     element.update(value=new_content)
@@ -758,65 +747,6 @@ def update_time_display(window: sg.Window, current_ms: float, total_ms: float) -
     else:
         time_text_empty = LANG.get('time_text_empty', 'Time: -/-')
         window["-TIME_TEXT-"].update(time_text_empty)
-
-
-def _parse_and_validate_time_parts(time_str: str | None) -> tuple[int, int, int] | None:
-    """Internal helper to parse MM:SS or HH:MM:SS and validate parts."""
-    if not time_str:
-        return None
-
-    parts = time_str.split(':')
-    try:
-        if len(parts) == 2:
-            m = int(parts[0])
-            s = int(parts[1])
-            if m < 0 or s < 0 or s >= 60:
-                return None
-            return (0, m, s)
-        elif len(parts) == 3:
-            h = int(parts[0])
-            m = int(parts[1])
-            s = int(parts[2])
-            if h < 0 or m < 0 or s < 0 or m >= 60 or s >= 60:
-                return None
-            return (h, m, s)
-        else:
-            return None
-    except ValueError:
-        return None
-
-
-def is_valid_time_format(time_str: str | None) -> bool:
-    """Checks if a string is in MM:SS or HH:MM:SS format with valid ranges."""
-    if not time_str:
-        return True
-
-    return _parse_and_validate_time_parts(time_str) is not None
-
-
-def time_string_to_seconds(time_str: str | None) -> int | None:
-    """Converts MM:SS or HH:MM:SS string to total seconds. Returns None if invalid."""
-    if not time_str:
-        return None
-
-    parsed_time = _parse_and_validate_time_parts(time_str)
-
-    if parsed_time is None:
-        return None
-
-    h, m, s = parsed_time
-    return h * 3600 + m * 60 + s
-
-
-def parse_srt_time_to_seconds(time_str: str) -> float:
-    """Parses a timestamp string like '00:00:01,500' or '00:01:00' into seconds (float)."""
-    try:
-        parts = time_str.replace(',', '.').split(':')
-        if len(parts) == 3:
-            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-    except Exception:
-        return 0.0
-    return 0.0
 
 
 def center_popup(parent_window: sg.Window, popup_window: sg.Window) -> None:
@@ -1087,6 +1017,7 @@ def get_default_settings() -> dict[str, Any]:
     '--check_for_updates': True,
     'prevent_system_sleep': True,
     '--normalize_to_simplified_chinese': True,
+    '--enable_google_lens': False,
     'gui_scaling': 'System Default',
     '--llm_api_key': '',
     '--llm_api_base': '',
@@ -1185,7 +1116,16 @@ def load_settings(window: sg.Window) -> None:
                 saved_scaling = config.get(CONFIG_SECTION, 'gui_scaling', fallback=DEFAULT_GUI_SCALING)
                 update_gui_scaling_combo(window, get_gui_scaling_index(saved_scaling))
 
+                saved_google_lens = config.getboolean(CONFIG_SECTION, '--enable_google_lens', fallback=False)
+                if saved_google_lens:
+                    window['--enable_google_lens'].update(True)
+                    window['-OCR_ENGINE_COMBO-'].update(values=ALL_ENGINES)
+                else:
+                    window['-OCR_ENGINE_COMBO-'].update(values=DEFAULT_ENGINES)
+
                 saved_engine = config.get(CONFIG_SECTION, '-OCR_ENGINE_COMBO-', fallback=DEFAULT_OCR_ENGINE)
+                if not saved_google_lens and "Google Lens" in saved_engine:
+                    saved_engine = DEFAULT_OCR_ENGINE
                 window['-OCR_ENGINE_COMBO-'].update(value=saved_engine)
 
                 if "Google Lens" in saved_engine:
@@ -1339,18 +1279,6 @@ class VideoHandler:
         self.current_new_w: int = 0
         self.current_new_h: int = 0
 
-        self._supports_threads = True
-
-    def _frame_to_array(self, frame: av.VideoFrame, fmt: str) -> np.ndarray[Any, Any]:
-        """Converts a frame to an array, safely falls back if threads arg is unsupported."""
-        if self._supports_threads:
-            try:
-                return frame.to_ndarray(format=fmt, threads=1)
-            except TypeError:
-                self._supports_threads = False
-
-        return frame.to_ndarray(format=fmt)
-
     def _get_cached_properties(self) -> dict[str, int]:
         """Returns internal properties without re-parsing the file."""
         return {'width': self.width, 'height': self.height, 'duration_ms': self.duration_ms}
@@ -1438,16 +1366,10 @@ class VideoHandler:
             self.buffer_node.push(frame)
             processed_frame: av.VideoFrame = self.sink_node.pull()
 
-            img_np = self._frame_to_array(processed_frame, fmt='rgb24')
+            img_np = frame_to_array(processed_frame, fmt='rgb24')
 
             if brightness_threshold is not None:
-                gray = (
-                    (img_np[..., 0].astype(np.uint16) * 77 +
-                    img_np[..., 1].astype(np.uint16) * 150 +
-                    img_np[..., 2].astype(np.uint16) * 29) >> 8
-                ).astype(np.uint8)
-                mask = gray > brightness_threshold
-                img_np *= mask[..., None]
+                apply_brightness_threshold(img_np, brightness_threshold)
 
             pil_img = Image.fromarray(img_np)
             img_byte_arr = io.BytesIO()
@@ -1472,19 +1394,6 @@ class VideoHandler:
 
 def handle_progress(match: re.Match[str], label_format_key: str, last_percentage: float, log_threshold: int, step_num: int, show_taskbar_progress: bool = True) -> float:
     """Handles progress parsing, ETA calculation, and GUI updates."""
-    if not hasattr(handle_progress, "last_key"):
-        handle_progress.last_key = None  # type: ignore
-    if not hasattr(handle_progress, "start_time"):
-        handle_progress.start_time = None  # type: ignore
-    if not hasattr(handle_progress, "last_update_time"):
-        handle_progress.last_update_time = 0  # type: ignore
-    if not hasattr(handle_progress, "start_percent"):
-        handle_progress.start_percent = 0.0  # type: ignore
-    if not hasattr(handle_progress, "last_eta"):
-        handle_progress.last_eta = ""  # type: ignore
-    if not hasattr(handle_progress, "last_taskbar_val"):
-        handle_progress.last_taskbar_val = -1  # type: ignore
-
     current_time = time.time()
     is_time_based = label_format_key == "progress_step1"
 
@@ -1518,13 +1427,10 @@ def handle_progress(match: re.Match[str], label_format_key: str, last_percentage
 
         current_item_display = str(current_item)
 
-    if handle_progress.last_key != label_format_key:  # type: ignore
-        handle_progress.last_key = label_format_key  # type: ignore
-        handle_progress.start_time = current_time  # type: ignore
-        handle_progress.last_update_time = 0  # type: ignore
-        handle_progress.start_percent = current_percent  # type: ignore
+    if progress_tracker._last_key != label_format_key:
+        progress_tracker.reset(label_format_key, current_time, current_percent)
 
-    time_delta = current_time - handle_progress.last_update_time  # type: ignore
+    time_delta = current_time - progress_tracker._last_update_time
     percent_threshold = last_percentage + 0.1
 
     should_update = False
@@ -1534,7 +1440,7 @@ def handle_progress(match: re.Match[str], label_format_key: str, last_percentage
     if not should_update:
         return last_percentage
 
-    handle_progress.last_update_time = current_time  # type: ignore
+    progress_tracker._last_update_time = current_time
 
     global_percent = ((step_num - 1) * (100.0 / 3.0)) + (current_percent / 3.0)
 
@@ -1566,16 +1472,16 @@ def handle_progress(match: re.Match[str], label_format_key: str, last_percentage
             log_msg = msg_template.format(percent=int(current_percent))
             gui_queue.put(('-VIDEOCR_OUTPUT-', log_msg + "\n"))
 
-    eta_str = handle_progress.last_eta  # type: ignore
-    elapsed = current_time - handle_progress.start_time  # type: ignore
-    percent_done_this_phase = current_percent - handle_progress.start_percent  # type: ignore
+    eta_str = progress_tracker._last_eta
+    elapsed = current_time - progress_tracker._start_time
+    percent_done_this_phase = current_percent - progress_tracker._start_percent
 
     if percent_done_this_phase > 0 and elapsed > 0:
         rate = percent_done_this_phase / elapsed
         remaining_percent = 100.0 - current_percent
         remaining_seconds = remaining_percent / rate
         eta_str = f"{eta_prefix}: {format_seconds(remaining_seconds)}"
-        handle_progress.last_eta = eta_str  # type: ignore
+        progress_tracker._last_eta = eta_str
 
     display_text = msg_template.format(percent=f"{current_percent:.1f}")
 
@@ -1588,20 +1494,11 @@ def handle_progress(match: re.Match[str], label_format_key: str, last_percentage
     if show_taskbar_progress:
         progress_value = max(1, int(global_percent))
 
-        if last_percentage < 0 or handle_progress.last_taskbar_val != progress_value:  # type: ignore
+        if last_percentage < 0 or progress_tracker._last_taskbar_val != progress_value:
             gui_queue.put(('-TASKBAR_STATE_UPDATE-', {'state': 'normal', 'progress': progress_value}))
-            handle_progress.last_taskbar_val = progress_value  # type: ignore
+            progress_tracker._last_taskbar_val = progress_value
 
     return current_percent
-
-
-def read_pipe(pipe: IO[str], output_list: list[str]) -> None:
-    """Reads lines from a pipe and appends them to a list."""
-    try:
-        for line in iter(pipe.readline, ''):
-            output_list.append(line)
-    finally:
-        pipe.close()
 
 
 def scan_video_folder(folder_path: str) -> list[str]:
@@ -1725,7 +1622,7 @@ def get_processing_args(values: dict[str, Any], window: sg.Window) -> tuple[dict
         args['subtitle_position'] = pos_value
 
     for key in values:
-        if key.startswith('--') and key not in ['--keyboard_seek_step', '--default_output_dir', '--save_in_video_dir', '--send_notification', '--save_crop_box', '--check_for_updates', '--language', '--use_dual_zone', '--subtitle_alignment', '--subtitle_alignment2']:
+        if key.startswith('--') and key not in ['--keyboard_seek_step', '--default_output_dir', '--save_in_video_dir', '--send_notification', '--save_crop_box', '--check_for_updates', '--language', '--use_dual_zone', '--subtitle_alignment', '--subtitle_alignment2', '--enable_google_lens']:
             stripped_key = key.lstrip('-')
             value = values.get(key)
             if isinstance(value, bool):
@@ -2101,16 +1998,7 @@ def execute_post_completion_action(window: sg.Window, icon: str | bytes | None =
 
 def update_taskbar(state: str | None = None, progress: int | None = None) -> None:
     """Updates the taskbar progress and state, checking for OS support."""
-    global previous_taskbar_state, prog
-    if prog is None:
-        return
-
-    if state and state != previous_taskbar_state:
-        previous_taskbar_state = state
-        prog.setState(state)
-
-    if progress is not None:
-        prog.setProgress(progress)
+    taskbar.update(state, progress)
 
 
 def check_crop_validity(video_path: str, args: dict[str, Any]) -> tuple[bool, str | None]:
@@ -2276,51 +2164,129 @@ def _start_plugin_download(window: sg.Window, values: dict[str, Any], engine_key
 
 
 # --- GUI Layout ---
-sg.theme("Darkgrey13")
+sg.theme_add_new('VideOCRWorkbench', {
+    'BACKGROUND': '#151922',
+    'TEXT': '#e7ecf3',
+    'INPUT': '#0f131a',
+    'TEXT_INPUT': '#e7ecf3',
+    'SCROLL': '#2c3442',
+    'BUTTON': ('#f4f7fb', '#2f4055'),
+    'PROGRESS': ('#69b7ff', '#222b37'),
+    'BORDER': 1,
+    'SLIDER_DEPTH': 0,
+    'PROGRESS_DEPTH': 0,
+})
+sg.theme("VideOCRWorkbench")
+sg.set_options(
+    font=("Segoe UI", scale_font_size(9)),
+    element_padding=(5, 4),
+    margins=(14, 12),
+    border_width=0,
+    button_color=('#f4f7fb', '#2f4055'),
+    input_elements_background_color='#0f131a',
+)
+
+FONT_TITLE = ("Segoe UI", scale_font_size(16), "bold")
+FONT_SECTION = ("Segoe UI", scale_font_size(10), "bold")
+FONT_PRIMARY = ("Segoe UI", scale_font_size(11), "bold")
+FONT_MONO = ("Consolas", scale_font_size(9))
+COLOR_PANEL = '#1b202a'
+COLOR_PREVIEW = '#05070a'
+COLOR_MUTED = '#9ba8b7'
+COLOR_ACCENT = '#69b7ff'
+COLOR_DANGER = '#b85a5a'
+BUTTON_PRIMARY = ('#07131f', COLOR_ACCENT)
+BUTTON_DANGER = ('#ffffff', COLOR_DANGER)
 
 tab1_content = [
+    # --- Header ---
     [
-        sg.Column([
-            [sg.Text("Source:", size=(17, 1), key='-LBL-SOURCE-'),
-            sg.Combo([], key="-VIDEO-LIST-", size=(38, 1), enable_events=True, readonly=True, disabled=True, expand_x=True), VerticalStrut()],
-            [sg.Text("Output SRT:", size=(17, 1), key='-LBL-OUTPUT_SRT-'),
-            sg.Input(key="--output", disabled_readonly_background_color=sg.theme_input_background_color(), readonly=True, disabled=True, size=(40, 1)), VerticalStrut()],
-            [sg.Text("OCR Engine:", size=(17, 1), key='-LBL-OCR_ENGINE-'),
-            sg.Combo(OCR_ENGINES, default_value=DEFAULT_OCR_ENGINE, key="-OCR_ENGINE_COMBO-", size=(38, 1), readonly=True, enable_events=True, expand_x=True), VerticalStrut()],
-            [sg.Text("Subtitle Language:", size=(17, 1), key='-LBL-SUB_LANG-'),
-            sg.Combo(paddle_display_names, default_value=DEFAULT_SUBTITLE_LANGUAGE, key="-LANG_COMBO-", size=(38, 1), readonly=True, enable_events=True, expand_x=True), VerticalStrut()],
-            [sg.Text("Subtitle Position:", size=(17, 1), key='-LBL-SUB_POS-'),
-            sg.Combo([], key="-SUBTITLE_POS_COMBO-", size=(38, 4), readonly=True, enable_events=True, expand_x=True), VerticalStrut()],
-        ], pad=(0, None)),
-        sg.Column([
-            [sg.Button("Open File...", key="-BTN-OPEN-FILE-"), sg.Button("Open Folder...", key="-BTN-OPEN-FOLDER-")],
-            [sg.Button('Save As...', key="-SAVE_AS_BTN-", disabled=True), sg.Button("Info", key="-BTN-OCR-INFO-")],
-            [sg.Push(), sg.Button("How to Use", key="-BTN-HELP-")],
-        ], pad=(0, None), expand_x=True)
-    ],
-    [sg.Graph(canvas_size=graph_size, graph_bottom_left=(0, graph_size[1]), graph_top_right=(graph_size[0], 0),
-              key="-GRAPH-", change_submits=True, drag_submits=True, enable_events=True, motion_events=True, background_color='black')],
-    [sg.Text("Seek:", key='-LBL-SEEK-'), sg.Slider(range=(0, 0), key="-SLIDER-", orientation='h', size=(45, 15), expand_x=True, enable_events=True, disable_number_display=True, disabled=True)],
-    [
+        sg.Text("VideOCRplus", font=FONT_TITLE, text_color='#f4f7fb'),
         sg.Push(),
-        sg.Text("Time: -/-", key="-TIME_TEXT-")
+        sg.Text("When ready:", key='-LBL-WHEN_READY-', text_color=COLOR_MUTED),
+        sg.Combo([], key='-POST_ACTION-', readonly=True, enable_events=True, size=(16, 1)),
     ],
-    [sg.Text("Crop Box (X, Y, W, H):", key='-LBL-CROP_BOX-'), sg.Text("Not Set", key="-CROP_COORDS-", size=(45, 1), expand_x=True)],
-    [sg.Button("Run", key="-BTN-RUN-"),
-     sg.Button("Pause", key="-BTN-PAUSE-", disabled=True),
-     sg.Button("Cancel", key="-BTN-CANCEL-", disabled=True),
-     sg.Button("Clear Crop", key="-BTN-CLEAR_CROP-", disabled=True)],
-    [sg.Text("Progress Info:", key='-LBL-PROGRESS-')],
+    # --- File + Engine Controls ---
     [
-        sg.Text("", key="-STATUS-LINE-", size=(None, 1), expand_x=True),
-        sg.Text("", key="-ETA-LINE-", size=(25, 1), justification='right')
+        sg.Frame("", [
+            [
+                sg.Button("Open File", key="-BTN-OPEN-FILE-", size=(12, 1), button_color=BUTTON_PRIMARY),
+                sg.Button("Open Folder", key="-BTN-OPEN-FOLDER-", size=(12, 1)),
+                sg.Text("Source:", size=(7, 1), key='-LBL-SOURCE-', text_color=COLOR_MUTED),
+                sg.Combo([], key="-VIDEO-LIST-", size=(36, 1), enable_events=True, readonly=True, disabled=True, expand_x=True),
+            ],
+            [
+                sg.Text("Output:", size=(7, 1), key='-LBL-OUTPUT_SRT-', text_color=COLOR_MUTED),
+                sg.Input(key="--output", disabled_readonly_background_color=sg.theme_input_background_color(), readonly=True, disabled=True, expand_x=True),
+                sg.Button('Save As', key="-SAVE_AS_BTN-", disabled=True, size=(9, 1)),
+            ],
+            [
+                sg.Text("Engine:", size=(7, 1), key='-LBL-OCR_ENGINE-', text_color=COLOR_MUTED),
+                sg.Combo(OCR_ENGINES, default_value=DEFAULT_OCR_ENGINE, key="-OCR_ENGINE_COMBO-", size=(31, 1), readonly=True, enable_events=True),
+                sg.Button("Info", key="-BTN-OCR-INFO-", size=(6, 1)),
+                sg.Text("Lang:", size=(5, 1), key='-LBL-SUB_LANG-', text_color=COLOR_MUTED),
+                sg.Combo(paddle_display_names, default_value=DEFAULT_SUBTITLE_LANGUAGE, key="-LANG_COMBO-", size=(17, 1), readonly=True, enable_events=True),
+                sg.Text("Pos:", size=(4, 1), key='-LBL-SUB_POS-', text_color=COLOR_MUTED),
+                sg.Combo([], key="-SUBTITLE_POS_COMBO-", size=(12, 1), readonly=True, enable_events=True),
+                sg.Push(),
+                sg.Button("Help", key="-BTN-HELP-", size=(8, 1)),
+            ],
+        ], expand_x=True, background_color=COLOR_PANEL, pad=(0, 8)),
     ],
-    [sg.ProgressBar(100, orientation='h', size=(1, 20), key="-PROGRESS-BAR-", expand_x=True)],
-    [sg.Text("Log:", key='-LBL-LOG-')],
-    [sg.Multiline(key="-OUTPUT-", size=(None, 7), expand_x=True, autoscroll=True, reroute_stdout=False, reroute_stderr=False, write_only=True, disabled=True)],
-    [sg.Push(),
-     sg.Text("When ready:", key='-LBL-WHEN_READY-'),
-     sg.Combo([], key='-POST_ACTION-', readonly=True, enable_events=True, size=(20, 1))]
+    # --- Main Workspace: preview + sidebar ---
+    [
+        sg.Column([
+            # --- Video Preview ---
+            [sg.Graph(canvas_size=graph_size, graph_bottom_left=(0, graph_size[1]), graph_top_right=(graph_size[0], 0),
+                      key="-GRAPH-", change_submits=True, drag_submits=True, enable_events=True, motion_events=True, background_color=COLOR_PREVIEW)],
+            # --- Media Control Bar ---
+            [
+                sg.Text("Seek:", key='-LBL-SEEK-LABEL-', text_color=COLOR_MUTED),
+                sg.Slider(range=(0, 0), key="-SLIDER-", orientation='h', size=(30, 15), expand_x=True, enable_events=True, disable_number_display=True, disabled=True),
+                sg.Text("Time: -/-", key="-TIME_TEXT-", size=(20, 1)),
+            ],
+            [
+                sg.Text("Crop:", key='-LBL-CROP-', size=(6, 1), text_color=COLOR_MUTED),
+                sg.Text("Not Set", key="-CROP_COORDS-", expand_x=True),
+                sg.Button("Clear Crop", key="-BTN-CLEAR_CROP-", disabled=True, size=(10, 1)),
+            ],
+            # --- Action Buttons ---
+            [
+                sg.Button("  Run  ", key="-BTN-RUN-", font=FONT_PRIMARY, size=(14, 1), button_color=BUTTON_PRIMARY),
+                sg.Button("Pause", key="-BTN-PAUSE-", disabled=True, visible=False, size=(10, 1)),
+                sg.Button("Cancel", key="-BTN-CANCEL-", disabled=True, visible=False, size=(10, 1), button_color=BUTTON_DANGER),
+                sg.Push(),
+                sg.Text("", key="-STATUS-LINE-", expand_x=True, text_color=COLOR_MUTED),
+                sg.Text("", key="-ETA-LINE-", size=(20, 1), justification='right', text_color=COLOR_MUTED),
+            ],
+            # --- Progress Bar ---
+            [sg.ProgressBar(100, orientation='h', size=(1, 18), key="-PROGRESS-BAR-", expand_x=True)],
+            # --- Collapsible Log ---
+            [
+                sg.Text("Log:", key='-LBL-LOG-', font=FONT_SECTION),
+                sg.Push(),
+                sg.Button("Expand", key="-BTN-TOGGLE-LOG-", size=(8, 1)),
+            ],
+            [sg.Multiline(key="-OUTPUT-", size=(None, 4), expand_x=True, autoscroll=True, reroute_stdout=False, reroute_stderr=False, write_only=True, disabled=True, font=FONT_MONO)],
+        ], pad=(0, 0), expand_x=True, background_color=sg.theme_background_color()),
+        # --- Right Sidebar ---
+        sg.Column([
+            [sg.Frame("Video Info", key='-FRM-VIDEO-INFO-', layout=[
+                [sg.Text("Res:", size=(7, 1), key='-LBL-RES-', text_color=COLOR_MUTED), sg.Text("--", key="-INFO-RES-", size=(18, 1))],
+                [sg.Text("Dur:", size=(7, 1), key='-LBL-DUR-', text_color=COLOR_MUTED), sg.Text("--", key="-INFO-DUR-", size=(18, 1))],
+                [sg.Text("FPS:", size=(7, 1), key='-LBL-FPS-', text_color=COLOR_MUTED), sg.Text("--", key="-INFO-FPS-", size=(18, 1))],
+                [sg.Text("Size:", size=(7, 1), key='-LBL-SIZE-', text_color=COLOR_MUTED), sg.Text("--", key="-INFO-SIZE-", size=(18, 1))],
+            ], pad=(6, 8), background_color=COLOR_PANEL, expand_x=True)] ,
+            [sg.Frame("Task Status", key='-FRM-TASK-STATUS-', layout=[
+                [sg.Text("Engine:", size=(7, 1), key='-LBL-ENGINE-', text_color=COLOR_MUTED), sg.Text("--", key="-INFO-ENGINE-", size=(18, 1))],
+                [sg.Text("Status:", size=(7, 1), key='-LBL-STATUS-', text_color=COLOR_MUTED), sg.Text("Idle", key="-INFO-STATUS-", size=(18, 1), text_color=COLOR_ACCENT)],
+                [sg.Text("GPU:", size=(7, 1), key='-LBL-GPU-', text_color=COLOR_MUTED), sg.Text("--", key="-INFO-GPU-", size=(18, 1))],
+            ], pad=(6, 8), background_color=COLOR_PANEL, expand_x=True)] ,
+            [sg.Frame("Quick Actions", key='-FRM-QUICK-ACTIONS-', layout=[
+                [sg.Button("Open Output", key="-BTN-OPEN-OUTPUT-", size=(22, 1), disabled=True)],
+            ], pad=(6, 8), background_color=COLOR_PANEL, expand_x=True)],
+        ], pad=(12, 0), vertical_alignment='top', background_color=sg.theme_background_color()),
+    ],
 ]
 tab1_layout = [[sg.Column(tab1_content,
                            key='-TAB1_COL-',
@@ -2333,53 +2299,66 @@ tab1_layout = [[sg.Column(tab1_content,
 
 tab2_content = [
     [
-        sg.Column([
-            [sg.Frame("OCR Settings", [
-                [sg.Text("Start Time (e.g., 0:00 or 1:23:45):", size=(35, 1), key='-LBL-TIME_START-'),
-                 sg.Input(DEFAULT_TIME_START, key="--time_start", size=(15, 1), enable_events=True)],
-                [sg.Text("End Time (e.g., 0:10 or 2:34:56):", size=(35, 1), key='-LBL-TIME_END-'),
-                 sg.Input("", key="--time_end", size=(15, 1), enable_events=True)],
-                [sg.Text("Confidence Threshold (0-100):", size=(35, 1), key='-LBL-CONF_THRESHOLD-'),
-                 sg.Input(DEFAULT_CONF_THRESHOLD, key="--conf_threshold", size=(10, 1), enable_events=True)],
-                [sg.Text("Similarity Threshold (0-100):", size=(35, 1), key='-LBL-SIM_THRESHOLD-'),
-                 sg.Input(DEFAULT_SIM_THRESHOLD, key="--sim_threshold", size=(10, 1), enable_events=True)],
-                [sg.Text("Max Merge Gap (seconds):", size=(35, 1), key='-LBL-MERGE_GAP-'),
-                 sg.Input(DEFAULT_MAX_MERGE_GAP, key="--max_merge_gap", size=(10, 1), enable_events=True)],
-                [sg.Text("Brightness Threshold (0-255):", size=(35, 1), key='-LBL-BRIGHTNESS-'),
-                 sg.Input("", key="--brightness_threshold", size=(10, 1), enable_events=True)],
-                [sg.Text("SSIM Threshold (0-100):", size=(35, 1), key='-LBL-SSIM-'),
-                 sg.Input(DEFAULT_SSIM_THRESHOLD, key="--ssim_threshold", size=(10, 1), enable_events=True)],
-                [sg.Text("Max OCR Image Width (pixel):", size=(35, 1), key='-LBL-OCR_WIDTH-'),
-                 sg.Input(DEFAULT_OCR_IMAGE_MAX_WIDTH, key="--ocr_image_max_width", size=(10, 1), enable_events=True)],
-                [sg.Text("Frames to Skip:", size=(35, 1), key='-LBL-FRAMES_SKIP-'),
-                 sg.Input(DEFAULT_FRAMES_TO_SKIP, key="--frames_to_skip", size=(10, 1), enable_events=True)],
-                [sg.Text("Minimum Subtitle Duration (seconds):", size=(35, 1), key='-LBL-MIN_DURATION-'),
-                 sg.Input(DEFAULT_MIN_SUBTITLE_DURATION, key="--min_subtitle_duration", size=(10, 1), enable_events=True)],
-            ], expand_x=True, pad=(0, 5))],
-        ], pad=(0, 0), expand_x=True, vertical_alignment='top'),
-        sg.Column([
-            [sg.Frame("LLM Vision Settings", [
-                [sg.Text("API Key:", size=(15, 1), key='-LBL-LLM_API_KEY-'),
-                 sg.Input("", key="--llm_api_key", size=(30, 1), password_char='*', enable_events=True, expand_x=True)],
-                [sg.Text("API Base URL:", size=(15, 1), key='-LBL-LLM_API_BASE-'),
-                 sg.Input("", key="--llm_api_base", size=(30, 1), enable_events=True, expand_x=True)],
-                [sg.Text("Model Name:", size=(15, 1), key='-LBL-LLM_MODEL-'),
-                 sg.Input("", key="--llm_model", size=(30, 1), enable_events=True, expand_x=True)],
-                [sg.Text("Concurrency (1-32):", size=(15, 1), key='-LBL-LLM_CONCURRENCY-'),
-                 sg.Input("4", key="--llm_concurrency", size=(10, 1), enable_events=True)],
-                [sg.Checkbox("Disable Inference Mode (reasoning/thinking)", default=False, key="--llm_disable_inference", enable_events=True)],
-                [sg.Text("Image Quality (50-100):", size=(20, 1), key='-LBL-LLM_IMAGE_QUALITY-'),
-                 sg.Input("75", key="--llm_image_quality", size=(10, 1), enable_events=True)],
-                [sg.Text("Preset:", size=(15, 1)),
-                 sg.Combo(["Custom"], default_value="Custom", key="-LLM_PRESET-", size=(20, 1), readonly=True, enable_events=True),
-                 sg.Button("Save", key="-BTN-LLM-PRESET-SAVE-", size=(6, 1)),
-                 sg.Button("Delete", key="-BTN-LLM-PRESET-DELETE-", size=(6, 1))],
-            ], expand_x=True, pad=(0, 5))],
-        ], pad=(0, 0), expand_x=True, vertical_alignment='top'),
+        sg.Text("Advanced Settings", font=FONT_TITLE, text_color='#f4f7fb', key='-ADVANCED-TITLE-'),
+        sg.Push(),
+        sg.Text("Tune recognition, integrations, components, and app behavior.", text_color=COLOR_MUTED, key='-ADVANCED-SUBTITLE-'),
     ],
     [
         sg.Column([
-            [sg.Frame("Processing Options", [
+            [sg.Frame("OCR Settings", key='-FRM-OCR-SETTINGS-', layout=[
+                [sg.Text("Frame Range", font=FONT_SECTION, text_color='#f4f7fb')],
+                [sg.Text("Start Time (e.g., 0:00 or 1:23:45):", size=(35, 1), key='-LBL-TIME_START-', text_color=COLOR_MUTED),
+                 sg.Input(DEFAULT_TIME_START, key="--time_start", size=(15, 1), enable_events=True)],
+                [sg.Text("End Time (e.g., 0:10 or 2:34:56):", size=(35, 1), key='-LBL-TIME_END-', text_color=COLOR_MUTED),
+                 sg.Input("", key="--time_end", size=(15, 1), enable_events=True)],
+                [sg.HorizontalSeparator()],
+                [sg.Text("OCR Filtering", font=FONT_SECTION, text_color='#f4f7fb')],
+                [sg.Text("Confidence Threshold (0-100):", size=(35, 1), key='-LBL-CONF_THRESHOLD-', text_color=COLOR_MUTED),
+                 sg.Input(DEFAULT_CONF_THRESHOLD, key="--conf_threshold", size=(10, 1), enable_events=True)],
+                [sg.Text("Similarity Threshold (0-100):", size=(35, 1), key='-LBL-SIM_THRESHOLD-', text_color=COLOR_MUTED),
+                 sg.Input(DEFAULT_SIM_THRESHOLD, key="--sim_threshold", size=(10, 1), enable_events=True)],
+                [sg.Text("Max Merge Gap (seconds):", size=(35, 1), key='-LBL-MERGE_GAP-', text_color=COLOR_MUTED),
+                 sg.Input(DEFAULT_MAX_MERGE_GAP, key="--max_merge_gap", size=(10, 1), enable_events=True)],
+                [sg.Text("Brightness Threshold (0-255):", size=(35, 1), key='-LBL-BRIGHTNESS-', text_color=COLOR_MUTED),
+                 sg.Input("", key="--brightness_threshold", size=(10, 1), enable_events=True)],
+                [sg.Text("SSIM Threshold (0-100):", size=(35, 1), key='-LBL-SSIM-', text_color=COLOR_MUTED),
+                 sg.Input(DEFAULT_SSIM_THRESHOLD, key="--ssim_threshold", size=(10, 1), enable_events=True)],
+                [sg.Text("Max OCR Image Width (pixel):", size=(35, 1), key='-LBL-OCR_WIDTH-', text_color=COLOR_MUTED),
+                 sg.Input(DEFAULT_OCR_IMAGE_MAX_WIDTH, key="--ocr_image_max_width", size=(10, 1), enable_events=True)],
+                [sg.Text("Frames to Skip:", size=(35, 1), key='-LBL-FRAMES_SKIP-', text_color=COLOR_MUTED),
+                 sg.Input(DEFAULT_FRAMES_TO_SKIP, key="--frames_to_skip", size=(10, 1), enable_events=True)],
+                [sg.Text("Minimum Subtitle Duration (seconds):", size=(35, 1), key='-LBL-MIN_DURATION-', text_color=COLOR_MUTED),
+                 sg.Input(DEFAULT_MIN_SUBTITLE_DURATION, key="--min_subtitle_duration", size=(10, 1), enable_events=True)],
+            ], expand_x=True, pad=(0, 8), background_color=COLOR_PANEL)],
+        ], pad=(0, 0), expand_x=True, vertical_alignment='top', background_color=sg.theme_background_color()),
+        sg.Column([
+            [sg.Frame("LLM Vision Settings", key='-FRM-LLM-SETTINGS-', layout=[
+                [sg.Text("External Vision OCR", font=FONT_SECTION, text_color='#f4f7fb'),
+                 sg.Push(),
+                 sg.Button("Test Connection", key="-BTN-LLM-TEST-", size=(15, 1), button_color=BUTTON_PRIMARY)],
+                [sg.Text("API Key:", size=(15, 1), key='-LBL-LLM_API_KEY-', text_color=COLOR_MUTED),
+                 sg.Input("", key="--llm_api_key", size=(30, 1), password_char='*', enable_events=True, expand_x=True)],
+                [sg.Text("API Base URL:", size=(15, 1), key='-LBL-LLM_API_BASE-', text_color=COLOR_MUTED),
+                 sg.Input("", key="--llm_api_base", size=(30, 1), enable_events=True, expand_x=True)],
+                [sg.Text("Model Name:", size=(15, 1), key='-LBL-LLM_MODEL-', text_color=COLOR_MUTED),
+                 sg.Input("", key="--llm_model", size=(30, 1), enable_events=True, expand_x=True)],
+                [sg.Text("Concurrency (1-32):", size=(15, 1), key='-LBL-LLM_CONCURRENCY-', text_color=COLOR_MUTED),
+                 sg.Input("4", key="--llm_concurrency", size=(10, 1), enable_events=True)],
+                [sg.Checkbox("Disable Inference Mode (reasoning/thinking)", default=False, key="--llm_disable_inference", enable_events=True)],
+                [sg.Text("Image Quality (50-100):", size=(20, 1), key='-LBL-LLM_IMAGE_QUALITY-', text_color=COLOR_MUTED),
+                 sg.Input("75", key="--llm_image_quality", size=(10, 1), enable_events=True)],
+                [sg.Text("Preset:", size=(15, 1), text_color=COLOR_MUTED),
+                 sg.Combo(["Custom"], default_value="Custom", key="-LLM_PRESET-", size=(20, 1), readonly=True, enable_events=True),
+                 sg.Button("Save", key="-BTN-LLM-PRESET-SAVE-", size=(6, 1)),
+                 sg.Button("Delete", key="-BTN-LLM-PRESET-DELETE-", size=(6, 1))],
+                [sg.Text("", key="-LBL-LLM-TEST-RESULT-", size=(45, 1), text_color=COLOR_MUTED)],
+            ], expand_x=True, pad=(0, 8), background_color=COLOR_PANEL)],
+        ], pad=(0, 0), expand_x=True, vertical_alignment='top', background_color=sg.theme_background_color()),
+    ],
+    [
+        sg.Column([
+            [sg.Frame("Processing Options", key='-FRM-PROCESSING-OPTIONS-', layout=[
+                [sg.Text("Recognition Behavior", font=FONT_SECTION, text_color='#f4f7fb')],
                 [sg.Checkbox("Enable GPU Usage", default=True, key="--use_gpu", enable_events=True, size=(25, 1)),
                  sg.Checkbox("Use Full Frame OCR", default=False, key="--use_fullframe", enable_events=True, size=(25, 1))],
                 [sg.Checkbox("Enable Dual Zone OCR", default=False, key="--use_dual_zone", enable_events=True, size=(25, 1)),
@@ -2388,39 +2367,47 @@ tab2_content = [
                  sg.Checkbox("Normalize Traditional to Simplified Chinese", default=True, key="--normalize_to_simplified_chinese", enable_events=True)],
                 [sg.Checkbox("Use Server Model", default=False, key="--use_server_model", enable_events=True, size=(25, 1)),
                  sg.Checkbox("Enable Subtitle Alignment", default=False, key="enable_subtitle_alignment", enable_events=True)],
+                [sg.Checkbox("Enable Google Lens Engine", default=False, key="--enable_google_lens", enable_events=True, size=(25, 1)),
+                 sg.Text("", key="-LBL-GL-STATUS-", size=(25, 1))],
                 [sg.Text("Zone 1 Alignment:", size=(25, 1), key='-LBL-SUBTITLE-ALIGNMENT-'),
-                 sg.Combo([], key="--subtitle_alignment", size=(15, 1), readonly=True, enable_events=True, disabled=True)],
+                 sg.Combo([], key="--subtitle_alignment", size=(22, 1), readonly=True, enable_events=True, disabled=True)],
                 [sg.Text("Zone 2 Alignment:", size=(25, 1), key='-LBL-SUBTITLE-ALIGNMENT2-'),
-                 sg.Combo([], key="--subtitle_alignment2", size=(15, 1), readonly=True, enable_events=True, disabled=True)],
-            ], expand_x=True, pad=(0, 5))],
-        ], pad=(0, 0), expand_x=True, vertical_alignment='top'),
+                 sg.Combo([], key="--subtitle_alignment2", size=(22, 1), readonly=True, enable_events=True, disabled=True)],
+            ], expand_x=True, pad=(0, 8), background_color=COLOR_PANEL)],
+        ], pad=(0, 0), expand_x=True, vertical_alignment='top', background_color=sg.theme_background_color()),
         sg.Column([
-            [sg.Frame("Component Downloads", [
-                [sg.Text("Download source:", size=(18, 1), key='-LBL-DL_SOURCE-'),
-                 sg.Combo(["GitHub (direct)", "gh-proxy.com (China)"], default_value="GitHub (direct)", key="-DL_SOURCE-", size=(25, 1), readonly=True),
+            [sg.Frame("Component Status", key='-FRM-COMPONENT-STATUS-', layout=[
+                [sg.Text("Plugin Components", font=FONT_SECTION, text_color='#f4f7fb'),
+                 sg.Push(),
                  sg.Button("Refresh", key="-BTN-REFRESH-PLUGINS-", size=(8, 1))],
-                [sg.Multiline("", key="-PLUGIN_STATUS-", size=(58, 6), disabled=True, autoscroll=False, font=("Consolas", 9))],
-                [sg.Button("Download Missing (for current engine)", key="-BTN-DL-MISSING-", size=(32, 1)),
-                 sg.Button("Download All", key="-BTN-DL-ALL-", size=(12, 1))],
-                [sg.Text("", key="-DL-PROGRESS-TEXT-", size=(50, 1))],
+                [sg.Text("Download source:", size=(18, 1), key='-LBL-DL_SOURCE-', text_color=COLOR_MUTED),
+                 sg.Combo(["GitHub (direct)", "gh-proxy.com (China)"], default_value="GitHub (direct)", key="-DL_SOURCE-", size=(25, 1), readonly=True),
+                 ],
+                [sg.Multiline("", key="-PLUGIN_STATUS-", size=(58, 4), disabled=True, autoscroll=False, font=FONT_MONO)],
+                [sg.Button("Download Missing", key="-BTN-DL-MISSING-", size=(22, 1), button_color=BUTTON_PRIMARY),
+                 sg.Button("Download All", key="-BTN-DL-ALL-", size=(12, 1)),
+                 sg.Button("Clear Cache", key="-BTN-CLEAR-CACHE-", size=(10, 1))],
+                [sg.Text("", key="-DL-PROGRESS-TEXT-", size=(50, 1), text_color=COLOR_MUTED)],
                 [sg.ProgressBar(100, orientation='h', size=(40, 12), key='-DL-PROGRESS-BAR-', visible=False)],
-            ], expand_x=True, pad=(0, 5))],
-        ], pad=(0, 0), expand_x=True, vertical_alignment='top'),
+            ], expand_x=True, pad=(0, 8), background_color=COLOR_PANEL)],
+        ], pad=(0, 0), expand_x=True, vertical_alignment='top', background_color=sg.theme_background_color()),
     ],
-    [sg.Frame("Application Settings", [
+    [sg.Frame("Application Settings", key='-FRM-APP-SETTINGS-', layout=[
         [
             sg.Column([
-                [sg.Text("UI Language:", size=(30, 1), key='-LBL-UI_LANG-'), VerticalStrut()],
-                [sg.Text("GUI Scaling:", size=(30, 1), key='-LBL-GUI_SCALING-'), VerticalStrut()],
+                [sg.Text("Application Preferences", font=FONT_SECTION, text_color='#f4f7fb'), VerticalStrut()],
+                [sg.Text("UI Language:", size=(30, 1), key='-LBL-UI_LANG-', text_color=COLOR_MUTED), VerticalStrut()],
+                [sg.Text("GUI Scaling:", size=(30, 1), key='-LBL-GUI_SCALING-', text_color=COLOR_MUTED), VerticalStrut()],
                 [sg.Checkbox("Save Crop Box Selection", default=True, key="--save_crop_box", enable_events=True), VerticalStrut()],
                 [sg.Checkbox("Save SRT in Video Directory", default=True, key="--save_in_video_dir", enable_events=True), VerticalStrut()],
-                [sg.Text("Output Directory:", size=(30, 1), key='-LBL-OUTPUT_DIR-'), VerticalStrut()],
-                [sg.Text("Keyboard Seek Step (seconds):", size=(30, 1), key='-LBL-SEEK_STEP-'), VerticalStrut()],
+                [sg.Text("Output Directory:", size=(30, 1), key='-LBL-OUTPUT_DIR-', text_color=COLOR_MUTED), VerticalStrut()],
+                [sg.Text("Keyboard Seek Step (seconds):", size=(30, 1), key='-LBL-SEEK_STEP-', text_color=COLOR_MUTED), VerticalStrut()],
                 [sg.Checkbox("Send Notification", default=True, key="--send_notification", enable_events=True), VerticalStrut()],
                 [sg.Checkbox("Prevent System Sleep", default=True, key="prevent_system_sleep", enable_events=True), VerticalStrut()],
                 [sg.Checkbox("Check for Updates On Startup", default=True, key="--check_for_updates", enable_events=True), VerticalStrut()],
-            ], pad=(0, None)),
+            ], pad=(0, None), background_color=COLOR_PANEL),
             sg.Column([
+                [VerticalStrut()],
                 [sg.Combo(ui_language_display_names, key='-UI_LANG_COMBO-', size=(32, 1), readonly=True, enable_events=True, expand_x=True), VerticalStrut()],
                 [sg.Combo([], key='gui_scaling', size=(32, 1), readonly=True, enable_events=True, expand_x=True), VerticalStrut()],
                 [VerticalStrut()],
@@ -2430,8 +2417,9 @@ tab2_content = [
                 [VerticalStrut()],
                 [VerticalStrut()],
                 [sg.Button("Check Now", key="-BTN-CHECK_UPDATE_MANUAL-")],
-            ], pad=(0, None)),
+            ], pad=(0, None), background_color=COLOR_PANEL),
             sg.Column([
+                [VerticalStrut()],
                 [VerticalStrut()],
                 [VerticalStrut()],
                 [VerticalStrut()],
@@ -2441,9 +2429,9 @@ tab2_content = [
                 [VerticalStrut()],
                 [VerticalStrut()],
                 [VerticalStrut()],
-            ], pad=(0, None), expand_x=True),
+            ], pad=(0, None), expand_x=True, background_color=COLOR_PANEL),
         ]
-    ], expand_x=True, pad=(0, 5))],
+    ], expand_x=True, pad=(0, 8), background_color=COLOR_PANEL)],
 ]
 tab2_layout = [[sg.Column(tab2_content,
                            key='-TAB2_COL-',
@@ -2455,18 +2443,38 @@ tab2_layout = [[sg.Column(tab2_content,
 
 tab3_layout = [
     [sg.Column([
-        [sg.Text("")],
-        [sg.Text("VideOCR", font=("Arial", scale_font_size(16), "bold"))],
-        [sg.Text(f"Version: {PROGRAM_VERSION}", font=("Arial", scale_font_size(11)), key='-LBL-ABOUT_VERSION-')],
-        [sg.Text("")],
-        [sg.Text("Get the newest version here:", font=("Arial", scale_font_size(11)), key='-LBL-GET_NEWEST-')],
-        [sg.Text("https://github.com/kiriya55/VideOCRplus/releases", font=("Arial", scale_font_size(11), 'underline'), enable_events=True, key="-GITHUB_RELEASES_LINK-")],
-        [sg.Text("")],
-        [sg.Text("Found a bug or have a suggestion? Feel free to open an issue at:", font=("Arial", scale_font_size(11)), key='-LBL-BUG_REPORT-')],
-        [sg.Text("https://github.com/kiriya55/VideOCRplus/issues", font=("Arial", scale_font_size(11), 'underline'), enable_events=True, key="-GITHUB_ISSUES_LINK-")],
-        [sg.Text("")],
-        [sg.HorizontalSeparator()],
-    ], element_justification='c', expand_x=True, expand_y=True)]
+        [
+            sg.Text("VideOCRplus", font=FONT_TITLE, text_color='#f4f7fb'),
+            sg.Push(),
+            sg.Text(f"Version: {PROGRAM_VERSION}", font=FONT_SECTION, text_color=COLOR_ACCENT, key='-LBL-ABOUT_VERSION-'),
+        ],
+        [sg.Text(
+            "Extract hardcoded subtitles with local OCR, Google Lens, or Vision LLM recognition.",
+            text_color=COLOR_MUTED,
+            key='-ABOUT-SUMMARY-',
+        )],
+        [sg.Frame("Project", key='-FRM-ABOUT-PROJECT-', layout=[
+            [sg.Text("VideOCRplus is a fork of VideOCR focused on modern OCR workflows.", text_color='#f4f7fb', key='-ABOUT-PROJECT-1-')],
+            [sg.Text("Current build supports PaddleOCR, optional Google Lens, LLM Vision, and plugin-based component downloads.", text_color=COLOR_MUTED, key='-ABOUT-PROJECT-2-')],
+        ], expand_x=True, pad=(0, 10), background_color=COLOR_PANEL)],
+        [
+            sg.Frame("Engines", key='-FRM-ABOUT-ENGINES-', layout=[
+                [sg.Text("PaddleOCR", size=(14, 1), text_color=COLOR_ACCENT), sg.Text("Local detection and recognition", text_color=COLOR_MUTED)],
+                [sg.Text("Google Lens", size=(14, 1), text_color=COLOR_ACCENT), sg.Text("Optional cloud recognition via Chrome Lens CLI", text_color=COLOR_MUTED)],
+                [sg.Text("LLM Vision", size=(14, 1), text_color=COLOR_ACCENT), sg.Text("Vision model recognition with semantic deduplication", text_color=COLOR_MUTED)],
+            ], expand_x=True, pad=(0, 6), background_color=COLOR_PANEL),
+            sg.Frame("Links", key='-FRM-ABOUT-LINKS-', layout=[
+                [sg.Text("Releases", size=(12, 1), text_color=COLOR_MUTED),
+                 sg.Text("https://github.com/kiriya55/VideOCRplus/releases", font=("Segoe UI", scale_font_size(9), 'underline'), text_color=COLOR_ACCENT, enable_events=True, key="-GITHUB_RELEASES_LINK-")],
+                [sg.Text("Issues", size=(12, 1), text_color=COLOR_MUTED),
+                 sg.Text("https://github.com/kiriya55/VideOCRplus/issues", font=("Segoe UI", scale_font_size(9), 'underline'), text_color=COLOR_ACCENT, enable_events=True, key="-GITHUB_ISSUES_LINK-")],
+            ], expand_x=True, pad=(0, 6), background_color=COLOR_PANEL),
+        ],
+        [sg.Frame("Notes", key='-FRM-ABOUT-NOTES-', layout=[
+            [sg.Text("For first-run setup, open Advanced Settings and refresh Component Status.", text_color=COLOR_MUTED, key='-ABOUT-NOTE-1-')],
+            [sg.Text("LLM Vision uses your configured OpenAI-compatible or Anthropic-compatible API endpoint.", text_color=COLOR_MUTED, key='-ABOUT-NOTE-2-')],
+        ], expand_x=True, pad=(0, 10), background_color=COLOR_PANEL)],
+    ], expand_x=True, expand_y=True, pad=(0, 0), background_color=sg.theme_background_color())]
 ]
 
 layout = [
@@ -2554,8 +2562,8 @@ window = sg.Window("VideOCR", layout, relative_location=(0, y_offset), icon=ICON
 
 # Resize vertical struts and resize window with new total height
 scaled_btn_height = window["-BTN-OPEN-FILE-"].Widget.winfo_reqheight()
-for key in window.key_dict:
-    if isinstance(key, str) and key.startswith("-STRUT_"):
+for key in list(window.key_dict):
+    if isinstance(key, str) and key.startswith("-STRUT_") and key in window.AllKeysDict:
         window[key].Widget.config(height=scaled_btn_height)
 
 window.refresh()
@@ -2593,14 +2601,16 @@ load_settings(window)
 
 update_gui_text(window)
 
-if sys.platform == 'win32':
-    prog = PyTaskbar.Progress(int(window.TKroot.wm_frame(), 16))
-    prog.init()
-    prog.setState('normal')
+taskbar.init(window)
 
 video_manager = VideoHandler()
 
 graph = window["-GRAPH-"]
+
+# Draw placeholder text on the empty video preview
+_placeholder_text = LANG.get('video_placeholder', 'Open a video file to begin')
+_placeholder_id = graph.draw_text(_placeholder_text, location=(graph_size[0] // 2, graph_size[1] // 2),
+                                   color='#666666', font=("Arial", scale_font_size(14)))
 
 
 # --- Initialize crop box state in the window object ---
@@ -2821,6 +2831,7 @@ KEYS_TO_AUTOSAVE = [
     '--check_for_updates',
     'prevent_system_sleep',
     '--normalize_to_simplified_chinese',
+    '--enable_google_lens',
     '-POST_ACTION-',
     'gui_scaling',
 ]
@@ -2850,6 +2861,7 @@ while True:
                 elif msg_event == '-PROGRESS-SMOOTH-':
                     if msg_data.get('text'):
                         window['-STATUS-LINE-'].update(msg_data['text'])
+                        window['-INFO-STATUS-'].update(msg_data['text'][:20])
                     if msg_data.get('eta'):
                         window['-ETA-LINE-'].update(msg_data['eta'])
                     if msg_data.get('percent') is not None:
@@ -2875,8 +2887,9 @@ while True:
                     set_system_awake(False)
 
                     window['-BTN-RUN-'].update(disabled=False)
-                    window['-BTN-PAUSE-'].update(disabled=True, text=LANG.get('btn_pause', "Pause"))
-                    window['-BTN-CANCEL-'].update(disabled=True)
+                    window['-BTN-PAUSE-'].update(disabled=True, visible=False, text=LANG.get('btn_pause', "Pause"))
+                    window['-BTN-CANCEL-'].update(disabled=True, visible=False)
+                    window['-INFO-STATUS-'].update("Done")
                     window['-SAVE_AS_BTN-'].update(disabled=not video_path)
                     window['--output'].update(disabled=not video_path)
                     window['-PROGRESS-BAR-'].update(0)
@@ -3006,6 +3019,32 @@ while True:
             _refresh_plugin_status(window, values)
             save_settings(window, values)
 
+        elif event == '--enable_google_lens':
+            if values.get('--enable_google_lens', False):
+                title = LANG.get('title_enable_google_lens', "Enable Google Lens Engine")
+                message = LANG.get('msg_enable_google_lens',
+                    "Google Lens engine requires an active internet connection "
+                    "and the Chrome Lens CLI tool.\n\n"
+                    "Do you have the required environment ready?")
+                choice = custom_popup_yes_no(window, title, message, icon=ICON_PATH)
+
+                if choice == 'Yes':
+                    window['-OCR_ENGINE_COMBO-'].update(values=ALL_ENGINES)
+                else:
+                    window['--enable_google_lens'].update(False)
+                    values['--enable_google_lens'] = False
+                    save_settings(window, values)
+                    continue
+            else:
+                current_engine = values.get('-OCR_ENGINE_COMBO-', DEFAULT_OCR_ENGINE)
+                window['-OCR_ENGINE_COMBO-'].update(values=DEFAULT_ENGINES)
+
+                if "Google Lens" in current_engine:
+                    window['-OCR_ENGINE_COMBO-'].update(value=DEFAULT_OCR_ENGINE)
+                    window.write_event_value('-OCR_ENGINE_COMBO-', DEFAULT_OCR_ENGINE)
+
+            save_settings(window, values)
+
     if event == sg.WIN_CLOSED:
         video_manager.close()
         set_system_awake(False)
@@ -3132,6 +3171,22 @@ while True:
     elif event == '-BTN-DL-ALL-':
         _start_plugin_download(window, values, "")
 
+    elif event == '-BTN-CLEAR-CACHE-':
+        try:
+            from videocr.plugin_manager import clear_cache, get_cache_size
+            size_mb = get_cache_size() / (1024 * 1024)
+            if size_mb > 0:
+                title = LANG.get('title_clear_cache', "Clear Download Cache")
+                msg = LANG.get('msg_clear_cache', "Clear {:.1f} MB of cached downloads?").format(size_mb)
+                choice = custom_popup_yes_no(window, title, msg, icon=ICON_PATH)
+                if choice == 'Yes':
+                    count = clear_cache()
+                    window['-DL-PROGRESS-TEXT-'].update(f"Cleared {count} cached files ({size_mb:.1f} MB)")
+            else:
+                window['-DL-PROGRESS-TEXT-'].update("Cache is already empty")
+        except Exception as e:
+            window['-DL-PROGRESS-TEXT-'].update(f"Cache error: {e}")
+
     elif event == '-DL-PROGRESS-UPDATE-':
         plugin_key, progress, status = values[event]
         if status == "downloading":
@@ -3207,6 +3262,35 @@ while True:
                 save_llm_presets(presets)
                 window['-LLM_PRESET-'].update(values=get_llm_preset_names(), value="Custom")
 
+    elif event == '-BTN-LLM-TEST-':
+        api_key = values.get('--llm_api_key', '').strip()
+        api_base = values.get('--llm_api_base', '').strip()
+        model = values.get('--llm_model', '').strip()
+
+        if not api_key or not api_base or not model:
+            window['-LBL-LLM-TEST-RESULT-'].update("Please fill in all fields first.", text_color='red')
+        else:
+            window['-LBL-LLM-TEST-RESULT-'].update("Testing...", text_color='yellow')
+            window['-BTN-LLM-TEST-'].update(disabled=True)
+
+            def _test_llm_connection(base_url: str) -> None:
+                try:
+                    req = urllib.request.Request(base_url, method='GET')
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        window.write_event_value('-LLM-TEST-RESULT-', ('success', resp.status))
+                except Exception as e:
+                    window.write_event_value('-LLM-TEST-RESULT-', ('error', str(e)[:100]))
+
+            threading.Thread(target=_test_llm_connection, args=(api_base,), daemon=True).start()
+
+    elif event == '-LLM-TEST-RESULT-':
+        status, detail = values[event]
+        window['-BTN-LLM-TEST-'].update(disabled=False)
+        if status == 'success':
+            window['-LBL-LLM-TEST-RESULT-'].update(f"Connection OK (HTTP {detail})", text_color='green')
+        else:
+            window['-LBL-LLM-TEST-RESULT-'].update(f"Failed: {detail}", text_color='red')
+
     elif event == '-NEW_VERSION_FOUND-':
         update_popup(
             parent_window=window,
@@ -3237,6 +3321,27 @@ while True:
             "will be used for OCR by default.")),
             icon=ICON_PATH
         )
+
+    elif event == "-BTN-TOGGLE-LOG-":
+        current_height = window['-OUTPUT-'].Widget.cget('height')
+        if current_height <= 3:
+            window['-OUTPUT-'].Widget.config(height=10)
+            window['-BTN-TOGGLE-LOG-'].update(LANG.get('btn_collapse_log', "Collapse"))
+        else:
+            window['-OUTPUT-'].Widget.config(height=3)
+            window['-BTN-TOGGLE-LOG-'].update(LANG.get('btn_expand_log', "Expand"))
+        window['-TAB1_COL-'].contents_changed()
+        stretch_scrollable_col('-TAB1_COL-')
+
+    elif event == "-BTN-OPEN-OUTPUT-":
+        output_path = values.get("--output", "")
+        if output_path:
+            output_dir = os.path.dirname(output_path)
+            if os.path.isdir(output_dir):
+                if sys.platform == "win32":
+                    os.startfile(output_dir)
+                else:
+                    webbrowser.open(f"file://{output_dir}")
 
     elif event == "-GITHUB_ISSUES_LINK-":
         webbrowser.open("https://github.com/kiriya55/VideOCRplus/issues")
@@ -3305,6 +3410,43 @@ while True:
                 window["-SLIDER-"].update(range=(0, video_duration_ms), value=0, disabled=False)
                 update_time_display(window, 0, video_duration_ms)
 
+                # Update sidebar info
+                window['-INFO-RES-'].update(f"{orig_w}x{orig_h}")
+                dur_s = video_duration_ms / 1000.0
+                dur_str = f"{int(dur_s // 60)}:{int(dur_s % 60):02d}"
+                window['-INFO-DUR-'].update(dur_str)
+                try:
+                    fps_val = video_manager.stream.average_rate
+                    if fps_val:
+                        window['-INFO-FPS-'].update(f"{float(fps_val):.2f}")
+                except Exception:
+                    pass
+                try:
+                    file_size = os.path.getsize(video_path)
+                    if file_size > 1024 * 1024 * 1024:
+                        size_str = f"{file_size / (1024*1024*1024):.1f} GB"
+                    else:
+                        size_str = f"{file_size / (1024*1024):.1f} MB"
+                    window['-INFO-SIZE-'].update(size_str)
+                except Exception:
+                    pass
+                engine_display = values.get('-OCR_ENGINE_COMBO-', DEFAULT_OCR_ENGINE)
+                window['-INFO-ENGINE-'].update(engine_display.split('(')[0].strip())
+                window['-INFO-STATUS-'].update("Ready")
+
+                # Check GPU status
+                try:
+                    import subprocess as _sp
+                    result = _sp.run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+                                     capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0 and result.stdout.strip():
+                        gpu_name = result.stdout.strip().split('\n')[0].split(',')[0].strip()
+                        window['-INFO-GPU-'].update(gpu_name[:15])
+                    else:
+                        window['-INFO-GPU-'].update("Not found")
+                except Exception:
+                    window['-INFO-GPU-'].update("Not found")
+
                 try:
                     output_path = generate_output_path(video_path, values)
 
@@ -3312,6 +3454,7 @@ while True:
                     if not getattr(window, 'is_processing', False):
                         window['-BTN-RUN-'].update(disabled=False)
                         window['-SAVE_AS_BTN-'].update(disabled=False)
+                        window['-BTN-OPEN-OUTPUT-'].update(disabled=False)
 
                     if '-GRAPH-' in window.AllKeysDict:
                         window['-GRAPH-'].set_focus()
@@ -3625,8 +3768,8 @@ while True:
             set_system_awake(True)
 
         window['-BTN-RUN-'].update(disabled=True)
-        window['-BTN-CANCEL-'].update(disabled=False)
-        window['-BTN-PAUSE-'].update(disabled=False, text=LANG.get('btn_pause', "Pause"))
+        window['-BTN-CANCEL-'].update(disabled=False, visible=True)
+        window['-BTN-PAUSE-'].update(disabled=False, visible=True, text=LANG.get('btn_pause', "Pause"))
         window.is_processing = True
         window.cancelled_by_user = False
 

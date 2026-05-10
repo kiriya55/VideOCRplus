@@ -231,5 +231,30 @@
     "status_completed": "Completed",
     "status_cancelled": "Cancelled",
     "status_error": "Error",
-    "status_paused": "Paused"
+    "status_paused": "Paused",
+
+    "chk_enable_google_lens": "Enable Google Lens Engine",
+    "tip_enable_google_lens": "Google Lens requires internet and Chrome Lens CLI.\nEnable this to add Google Lens as an OCR engine option.",
+    "title_enable_google_lens": "Enable Google Lens Engine",
+    "msg_enable_google_lens": "Google Lens engine requires an active internet connection and the Chrome Lens CLI tool.\n\nDo you have the required environment ready?",
+    "btn_expand_log": "Expand",
+    "btn_collapse_log": "Collapse",
+    "btn_open_output": "Open Output",
+    "title_clear_cache": "Clear Download Cache",
+    "msg_clear_cache": "Clear {:.1f} MB of cached downloads?",
+
+    "frm_video_info": "Video Info",
+    "frm_task_status": "Task Status",
+    "frm_quick_actions": "Quick Actions",
+    "lbl_resolution": "Res:",
+    "lbl_duration": "Dur:",
+    "lbl_fps": "FPS:",
+    "lbl_file_size": "Size:",
+    "lbl_engine": "Engine:",
+    "lbl_status": "Status:",
+    "lbl_gpu": "GPU:",
+    "lbl_idle": "Idle",
+    "video_placeholder": "Open a video file to begin",
+    "lbl_crop": "Crop:",
+    "lbl_seek_label": "Seek:"
 }

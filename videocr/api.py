@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 from . import utils
+from .config import DetectionConfig, FrameConfig, LlmConfig, OcrConfig, PostProcessConfig, TimeRange
 from .plugin_manager import PLUGIN_REGISTRY, check_plugin_status, get_missing_plugins
 from .video import Video
 
@@ -46,26 +47,26 @@ def save_subtitles_to_file(
     if ocr_engine == 'paddleocr':
         det_model_dir, rec_model_dir, cls_model_dir = utils.resolve_model_dirs(lang, use_server_model)
     else:
-        # For the Text-Detection-Only Pass just the default detection model is needed
         det_model_dir, rec_model_dir, cls_model_dir = utils.resolve_model_dirs('en', use_server_model)
 
     google_lens_path = ""
     if ocr_engine == "google_lens":
         google_lens_path = utils.find_executable("chrome-lens")
 
+    ocr = OcrConfig(ocr_engine=ocr_engine, lang=lang, use_gpu=use_gpu, use_angle_cls=use_angle_cls, use_server_model=use_server_model)
+    time_range = TimeRange(time_start=time_start, time_end=time_end)
+    detection = DetectionConfig(conf_threshold=conf_threshold, ssim_threshold=ssim_threshold, brightness_threshold=brightness_threshold)
+    frame = FrameConfig(use_fullframe=use_fullframe, frames_to_skip=frames_to_skip, ocr_image_max_width=ocr_image_max_width, crop_zones=crop_zones, subtitle_position=subtitle_position)
+    llm = LlmConfig(api_key=llm_api_key, api_base=llm_api_base, model=llm_model, concurrency=llm_concurrency, disable_inference=llm_disable_inference, max_frames_per_grid=llm_max_frames_per_grid, image_quality=llm_image_quality)
+    post = PostProcessConfig(sim_threshold=sim_threshold, max_merge_gap_sec=max_merge_gap_sec, post_processing=post_processing, min_subtitle_duration_sec=min_subtitle_duration_sec, subtitle_alignments=subtitle_alignments, normalize_to_simplified_chinese=normalize_to_simplified_chinese)
+
     v = Video(video_path, paddleocr_path, det_model_dir, rec_model_dir, cls_model_dir, google_lens_path)
     try:
-        v.run_ocr(
-            use_gpu, ocr_engine, lang, use_angle_cls, time_start, time_end, conf_threshold,
-            use_fullframe, brightness_threshold, ssim_threshold, subtitle_position,
-            frames_to_skip, crop_zones, ocr_image_max_width, normalize_to_simplified_chinese,
-            llm_api_key, llm_api_base, llm_model, llm_concurrency, llm_disable_inference,
-            llm_max_frames_per_grid, llm_image_quality
-        )
+        v.run_ocr(ocr, time_range, detection, frame, llm, post)
     except Exception as e:
         print(f"Error: {e}", flush=True)
         sys.exit(1)
-    subtitles = v.get_subtitles(sim_threshold, max_merge_gap_sec, lang, post_processing, min_subtitle_duration_sec, subtitle_alignments)
+    subtitles = v.get_subtitles(post.sim_threshold, post.max_merge_gap_sec, ocr.lang, post.post_processing, post.min_subtitle_duration_sec, post.subtitle_alignments)
 
     with open(file_path, 'w+', encoding='utf-8') as f:
         f.write(subtitles)

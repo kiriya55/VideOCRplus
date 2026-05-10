@@ -211,5 +211,30 @@
     "status_completed": "完了",
     "status_cancelled": "キャンセル済み",
     "status_error": "エラー",
-    "status_paused": "一時停止"
+    "status_paused": "一時停止",
+
+    "chk_enable_google_lens": "Google Lens エンジンを有効にする",
+    "tip_enable_google_lens": "Google Lens にはインターネットと Chrome Lens CLI が必要です。\n有効にすると OCR エンジンオプションに追加されます。",
+    "title_enable_google_lens": "Google Lens エンジンを有効にする",
+    "msg_enable_google_lens": "Google Lens エンジンにはインターネット接続と Chrome Lens CLI ツールが必要です。\n\n必要な環境は準備できていますか？",
+    "btn_expand_log": "展開",
+    "btn_collapse_log": "折りたたむ",
+    "btn_open_output": "出力を開く",
+    "title_clear_cache": "ダウンロードキャッシュをクリア",
+    "msg_clear_cache": "キャッシュされた {:.1f} MB のダウンロードをクリアしますか？",
+
+    "frm_video_info": "動画情報",
+    "frm_task_status": "タスク状態",
+    "frm_quick_actions": "クイックアクション",
+    "lbl_resolution": "解像度：",
+    "lbl_duration": "長さ：",
+    "lbl_fps": "FPS：",
+    "lbl_file_size": "サイズ：",
+    "lbl_engine": "エンジン：",
+    "lbl_status": "状態：",
+    "lbl_gpu": "GPU：",
+    "lbl_idle": "アイドル",
+    "video_placeholder": "動画ファイルを開いてください",
+    "lbl_crop": "切り取り：",
+    "lbl_seek_label": "シーク："
 }

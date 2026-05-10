@@ -1,7 +1,7 @@
-English | [中文](https://github.com/kiriya55/VideOCRplus/blob/master/README_ch.md)
+English | [中文](https://github.com/kiriya55/VideOCRplus/blob/main/README_ch.md)
 
 <p align="center">
-<img src="https://github.com/kiriya55/VideOCRplus/blob/master/Pictures/VideOCR.png" alt="VideOCRplus Icon" width="128">
+<img src="https://github.com/kiriya55/VideOCRplus/blob/main/Pictures/VideOCR.png" alt="VideOCRplus Icon" width="128">
   <h1 align="center">VideOCRplus</h1>
   <p align="center">
     Extract hardcoded subtitles from videos!
@@ -35,26 +35,54 @@ This repository also provides a CLI version of VideOCRplus.
 | LLM Deduplication | N/A | **Semantic dedup** via Vision LLM (replaces Levenshtein) |
 | Concurrent Processing | N/A | **Concurrent LLM API calls** with configurable workers |
 | LLM Grid Optimization | N/A | **Auto grid sizing** + text-based cross-grid dedup |
-| Developer Mode | N/A | Run directly via `python gui.py` / `python cli.py` |
+| Source Run Mode | N/A | `install.bat` / `install.sh` create a virtual environment, then launch with app scripts |
 
 ## Setup
 
-### Windows:
-You can either install it with the setup installer or you can just download a folder with all the required files including the executable and unzip it to your desired location.
+### From source
 
-### Linux:
-Download the tarball archive from the releases page and unzip it to your desired location.
-Optionally you can add VideOCRplus to your App menus if you want to.
-For this step open a terminal where you unpacked the archive and run:
+VideOCRplus is launched through platform scripts. The install scripts create a local `.venv` virtual environment and install everything listed in `requirements.txt`.
+
+Windows:
+
+```bat
+install.bat
+VideOCRplus.bat
+```
+
+GNU/Linux or macOS:
+
+```bash
+chmod +x install.sh VideOCRplus.sh VideOCRplus-cli.sh
+./install.sh
+./VideOCRplus.sh
+```
+
+The CLI helper uses the same virtual environment:
+
+Windows:
+
+```bat
+VideOCRplus-cli.bat -h
+```
+
+GNU/Linux or macOS:
+
+```
+./VideOCRplus-cli.sh -h
+```
+
+### Packaged releases
+
+Windows users can also install with the setup installer or download a release folder that includes the executable.
+
+GNU/Linux users can download the tarball archive from the releases page and unzip it. To add VideOCRplus to the application menu, run:
 
 ```
 ./install_videocr.sh
 ```
-This will create a shortcut for VideOCRplus. You can remove it via:  
 
-```
-./uninstall_videocr.sh
-```
+Remove the shortcut with `./uninstall_videocr.sh`.
 
 ### Plugin Downloads
 
@@ -69,31 +97,22 @@ You can choose between direct GitHub download or **gh-proxy.com** acceleration (
 
 ## Usage
 
-### Developer Mode (run from source)
+### Source Run Mode
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run GUI
-python gui.py
-
-# Run CLI
-python cli.py -h
-```
+Run `install.bat` on Windows or `./install.sh` on GNU/Linux/macOS, then start the GUI with `VideOCRplus.bat` or `./VideOCRplus.sh`.
 
 ### Using the GUI
 
 Import a video and seek through the video via the timeline. You can also use the right and left arrow keys. Then draw a crop box over the subtitle region. Use click+drag to select. Afterwards start the subtitle extraction process via the "Run" button.
 
 Further options can be configured in the "Advanced Settings" tab. You can find more info about them in the parameters section available in the CLI version.
-![image](https://github.com/kiriya55/VideOCRplus/blob/master/Pictures/GUI.png)
+![image](https://github.com/kiriya55/VideOCRplus/blob/main/Pictures/GUI.png)
 
 ## Usage (CLI version)
 
 ### From source:
 ```bash
-python cli.py -h
+./VideOCRplus-cli.sh -h
 ```
 
 ### Compiled binary (from releases):
@@ -110,12 +129,12 @@ Linux:
 
 ### Example usage:
 ```bash
-python cli.py --video_path "Path/to/your/video/example.mp4" --output "Path/to/your/desired/subtitle/location/example.srt" --lang en --time_start "18:40" --use_gpu true
+./VideOCRplus-cli.sh --video_path "Path/to/your/video/example.mp4" --output "Path/to/your/desired/subtitle/location/example.srt" --lang en --time_start "18:40" --use_gpu true
 ```
 
 ### Example usage with LLM Vision:
 ```bash
-python cli.py --video_path "Path/to/your/video/example.mp4" --output "Path/to/your/desired/subtitle/location/example.srt" --ocr_engine llm_vision --llm_api_key YOUR_KEY --llm_api_base https://api.openai.com/v1 --llm_model gpt-4o
+./VideOCRplus-cli.sh --video_path "Path/to/your/video/example.mp4" --output "Path/to/your/desired/subtitle/location/example.srt" --ocr_engine llm_vision --llm_api_key YOUR_KEY --llm_api_base https://api.openai.com/v1 --llm_model gpt-4o
 ```
 
 More info about the arguments can be found in the parameters section further down.
@@ -206,7 +225,7 @@ Input Video Quality       | Use lower quality           | Use higher quality  | 
 - `crop_x(2)`, `crop_y(2)`, `crop_width(2)`, `crop_height(2)`
 
   Specifies the bounding area(s) in pixels for the portion of the frame that will be used for OCR. See image below for example:
-  ![image](https://github.com/kiriya55/VideOCRplus/blob/master/Pictures/crop_example.png)
+  ![image](https://github.com/kiriya55/VideOCRplus/blob/main/Pictures/crop_example.png)
 
 - `subtitle_alignment(2)`
 
@@ -265,14 +284,16 @@ Input Video Quality       | Use lower quality           | Use higher quality  | 
 
 ## Build and Compile Instructions
 
-### Developer Mode (no build required)
+### Source Run Mode (no build required)
 
 ```bash
 git clone https://github.com/kiriya55/VideOCRplus.git
 cd VideOCRplus
-pip install -r requirements.txt
-python gui.py
+./install.sh
+./VideOCRplus.sh
 ```
+
+On Windows, run `install.bat` and then `VideOCRplus.bat`.
 
 ### Building Compiled Binaries
 

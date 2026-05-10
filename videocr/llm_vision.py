@@ -1,14 +1,28 @@
 from __future__ import annotations
 
 import base64
+import datetime
 import io
 import json
+import os
 import sys
+import tempfile
 import urllib.request
 from typing import Any
 
 import numpy as np
 from PIL import Image
+
+_DEBUG_ENABLED = os.environ.get("VIDEOCR_LLM_DEBUG", "") == "1"
+_LLM_LOG_PATH = os.path.join(tempfile.gettempdir(), "videocr_llm_debug.log")
+
+
+def _debug_log(msg: str) -> None:
+    try:
+        with open(_LLM_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
 
 
 LLM_RECOGNITION_PROMPT = """You are processing a grid of video subtitle frames.
@@ -180,21 +194,10 @@ def _call_anthropic_api(b64_image: str, prompt: str, api_key: str, api_base: str
 def _send_request(url: str, payload: dict[str, Any], headers: dict[str, str],
                   timeout: int) -> dict[str, Any]:
     """Send HTTP request and parse the response."""
-    import datetime
-    import os
-    import tempfile
-
-    # Log to temp dir so it works in both dev and compiled mode
-    log_path = os.path.join(tempfile.gettempdir(), "videocr_llm_debug.log")
-
-    def log(msg: str):
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
-
-    log(f"=== LLM API Request ===")
-    log(f"Request URL: {url}")
-    log(f"Model: {payload.get('model', 'N/A')}")
-    log(f"Image size (base64 chars): {len(str(payload.get('messages', [{}])[0].get('content', '')))}")
+    if _DEBUG_ENABLED:
+        _debug_log(f"=== LLM API Request ===")
+        _debug_log(f"Request URL: {url}")
+        _debug_log(f"Model: {payload.get('model', 'N/A')}")
 
     data = json.dumps(payload).encode('utf-8')
     req = urllib.request.Request(url, data=data, headers=headers, method='POST')
@@ -204,26 +207,27 @@ def _send_request(url: str, payload: dict[str, Any], headers: dict[str, str],
             response_body = resp.read().decode('utf-8')
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8') if e.fp else str(e)
-        log(f"HTTP Error {e.code}: {error_body[:500]}")
+        if _DEBUG_ENABLED:
+            _debug_log(f"HTTP Error {e.code}: {error_body[:500]}")
         raise RuntimeError(f"LLM API HTTP error {e.code}: {error_body}") from e
     except urllib.error.URLError as e:
-        log(f"URL Error: {e.reason}")
+        if _DEBUG_ENABLED:
+            _debug_log(f"URL Error: {e.reason}")
         raise RuntimeError(f"LLM API connection error: {e.reason}") from e
 
     response_json = json.loads(response_body)
 
-    # Extract content text from response
     if "choices" in response_json:
-        # OpenAI format
         content = response_json["choices"][0]["message"]["content"]
     elif "content" in response_json:
-        # Anthropic format
         content = response_json["content"][0]["text"]
     else:
-        log(f"Unexpected response format: {response_body[:500]}")
+        if _DEBUG_ENABLED:
+            _debug_log(f"Unexpected response format: {response_body[:500]}")
         raise RuntimeError(f"Unexpected LLM API response format: {response_body[:500]}")
 
-    log(f"LLM response content (first 500 chars): {content[:500]}")
+    if _DEBUG_ENABLED:
+        _debug_log(f"LLM response content (first 500 chars): {content[:500]}")
 
     return _parse_llm_response(content)
 
