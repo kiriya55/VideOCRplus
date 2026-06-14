@@ -38,6 +38,10 @@ This repository also provides a CLI version of VideOCRplus.
 | LLM Grid Optimization | N/A | **Auto grid sizing** + text-based cross-grid dedup |
 | Source Run Mode | N/A | `install.bat` / `install.sh` create a virtual environment, then launch with app scripts |
 
+**Setting UI**
+
+![image](https://github.com/kiriya55/VideOCRplus/blob/main/Pictures/Setting.png)
+
 ## Setup
 
 ### From source

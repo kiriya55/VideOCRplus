@@ -37,6 +37,10 @@
 | LLM 网格优化 | 无 | **自动网格尺寸** + 跨网格文本去重 |
 | 源码运行模式 | 无 | `install.bat` / `install.sh` 创建虚拟环境，并通过启动脚本运行 |
 
+**设置页面UI**
+
+![image](https://github.com/kiriya55/VideOCRplus/blob/main/Pictures/Setting.png)
+
 ## 安装
 
 ### 从源码运行
