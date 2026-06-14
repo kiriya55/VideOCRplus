@@ -1,7 +1,7 @@
 [English](https://github.com/kiriya55/VideOCRplus/blob/main/README.md) | 中文
 
 <p align="center">
-<img src="https://github.com/kiriya55/VideOCRplus/blob/master/Pictures/VideOCRplus.png" alt="VideOCRplus 图标" width="128">
+<img src="https://github.com/kiriya55/VideOCRplus/blob/main/Pictures/VideOCRplus.png" alt="VideOCRplus 图标" width="128">
   <h1 align="center">VideOCRplus</h1>
   <p align="center">
     从视频中提取硬编码字幕！
