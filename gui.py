@@ -11,9 +11,9 @@
 # Windows-specific metadata for the executable
 # nuitka-project-if: {OS} == "Windows":
 #     nuitka-project-set: APP_VERSION = __import__("_version").__version__
-#     nuitka-project: --file-description="VideOCR"
+#     nuitka-project: --file-description="VideOCRplus"
 #     nuitka-project: --file-version={APP_VERSION}
-#     nuitka-project: --product-name="VideOCR-GUI"
+#     nuitka-project: --product-name="VideOCRplus-GUI"
 #     nuitka-project: --product-version={APP_VERSION}
 #     nuitka-project: --copyright="timminator"
 #     nuitka-project: --windows-icon-from-ico=Installer/VideOCR.ico
@@ -51,7 +51,7 @@ from wakepy import keep
 if sys.platform == "win32":
     import PyTaskbar  # type: ignore
     from winotify import Notification, audio  # type: ignore
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('VideOCR')
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('VideOCRplus')
 else:
     from plyer import notification  # type: ignore
 
@@ -157,7 +157,7 @@ def send_notification(title: str, message: str) -> None:
     if sys.platform == "win32":
         try:
             toast = Notification(
-                app_id="VideOCR",
+                app_id="VideOCRplus",
                 title=title,
                 msg=message,
                 icon=os.path.join(APP_DIR, 'VideOCR.ico')
@@ -171,7 +171,7 @@ def send_notification(title: str, message: str) -> None:
             notification.notify(
                 title=title,
                 message=message,
-                app_name='VideOCR',
+                app_name='VideOCRplus',
                 app_icon=os.path.join(APP_DIR, 'VideOCR.png')
             )
         except Exception as e:
@@ -572,15 +572,19 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         '-FRM-QUICK-ACTIONS-': {'text': 'frm_quick_actions'},
         '-LBL-CROP-': {'text': 'lbl_crop'},
         '-LBL-SEEK-LABEL-': {'text': 'lbl_seek_label'},
+        '-INFO-STATUS-': {'text': 'lbl_idle'},
 
         # Tab 2
         '-TAB-ADVANCED-': {'text': 'tab_advanced'},
         '-ADVANCED-TITLE-': {'text': 'tab_advanced'},
+        '-ADVANCED-SUBTITLE-': {'text': 'advanced_subtitle'},
         '-FRM-OCR-SETTINGS-': {'text': 'lbl_ocr_settings'},
+        '-LBL-FRAME-RANGE-': {'text': 'lbl_frame_range'},
         '-LBL-TIME_START-': {'text': 'lbl_time_start', 'tooltip': 'tip_time_start'},
         '--time_start': {'tooltip': 'tip_time_start'},
         '-LBL-TIME_END-': {'text': 'lbl_time_end', 'tooltip': 'tip_time_end'},
         '--time_end': {'tooltip': 'tip_time_end'},
+        '-LBL-OCR-FILTERING-': {'text': 'lbl_ocr_filtering'},
         '-LBL-CONF_THRESHOLD-': {'text': 'lbl_conf_threshold', 'tooltip': 'tip_conf_threshold'},
         '--conf_threshold': {'tooltip': 'tip_conf_threshold'},
         '-LBL-SIM_THRESHOLD-': {'text': 'lbl_sim_threshold', 'tooltip': 'tip_sim_threshold'},
@@ -610,6 +614,8 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         '--use_server_model': {'text': 'chk_server_model', 'tooltip': 'tip_server_model'},
         '--enable_google_lens': {'text': 'chk_enable_google_lens', 'tooltip': 'tip_enable_google_lens'},
         '-FRM-LLM-SETTINGS-': {'text': 'lbl_llm_settings'},
+        '-LBL-EXTERNAL-VISION-OCR-': {'text': 'lbl_external_vision_ocr'},
+        '-BTN-LLM-TEST-': {'text': 'btn_test_connection'},
         '-LBL-LLM_API_KEY-': {'text': 'lbl_llm_api_key', 'tooltip': 'tip_llm_api_key'},
         '--llm_api_key': {'tooltip': 'tip_llm_api_key'},
         '-LBL-LLM_API_BASE-': {'text': 'lbl_llm_api_base', 'tooltip': 'tip_llm_api_base'},
@@ -621,10 +627,21 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         '--llm_disable_inference': {'text': 'lbl_llm_disable_inference', 'tooltip': 'tip_llm_disable_inference'},
         '-LBL-LLM_IMAGE_QUALITY-': {'text': 'lbl_llm_image_quality', 'tooltip': 'tip_llm_image_quality'},
         '--llm_image_quality': {'tooltip': 'tip_llm_image_quality'},
+        '-LBL-LLM-PRESET-': {'text': 'lbl_preset'},
+        '-BTN-LLM-PRESET-SAVE-': {'text': 'btn_save'},
+        '-BTN-LLM-PRESET-DELETE-': {'text': 'btn_delete'},
+        '-FRM-PROCESSING-OPTIONS-': {'text': 'frm_processing_options'},
+        '-LBL-RECOGNITION-BEHAVIOR-': {'text': 'lbl_recognition_behavior'},
         '-FRM-COMPONENT-STATUS-': {'text': 'lbl_download_settings'},
+        '-LBL-PLUGIN-COMPONENTS-': {'text': 'lbl_plugin_components'},
+        '-BTN-REFRESH-PLUGINS-': {'text': 'btn_refresh'},
         '-LBL-DL_SOURCE-': {'text': 'lbl_dl_source', 'tooltip': 'tip_dl_source'},
         '-DL_SOURCE-': {'tooltip': 'tip_dl_source'},
+        '-BTN-DL-MISSING-': {'text': 'btn_download_missing'},
+        '-BTN-DL-ALL-': {'text': 'btn_download_all'},
+        '-BTN-CLEAR-CACHE-': {'text': 'btn_clear_cache'},
         '-FRM-APP-SETTINGS-': {'text': 'lbl_videocr_settings'},
+        '-LBL-APP-PREFERENCES-': {'text': 'lbl_app_preferences'},
         '-LBL-UI_LANG-': {'text': 'lbl_ui_lang', 'tooltip': 'tip_ui_lang'},
         '-UI_LANG_COMBO-': {'tooltip': 'tip_ui_lang'},
         '-LBL-GUI_SCALING-': {'text': 'lbl_gui_scaling', 'tooltip': 'tip_gui_scaling'},
@@ -644,6 +661,20 @@ def update_gui_text(window: sg.Window, is_paused: bool = False) -> None:
         # Tab 3
         '-TAB-ABOUT-': {'text': 'tab_about'},
         '-LBL-ABOUT_VERSION-': {'text': 'lbl_about_version'},
+        '-ABOUT-SUMMARY-': {'text': 'about_summary'},
+        '-FRM-ABOUT-PROJECT-': {'text': 'frm_about_project'},
+        '-ABOUT-PROJECT-1-': {'text': 'about_project_1'},
+        '-ABOUT-PROJECT-2-': {'text': 'about_project_2'},
+        '-FRM-ABOUT-ENGINES-': {'text': 'frm_about_engines'},
+        '-ABOUT-ENGINE-PADDLEOCR-': {'text': 'about_engine_paddleocr'},
+        '-ABOUT-ENGINE-GOOGLE-LENS-': {'text': 'about_engine_google_lens'},
+        '-ABOUT-ENGINE-LLM-VISION-': {'text': 'about_engine_llm_vision'},
+        '-FRM-ABOUT-LINKS-': {'text': 'frm_about_links'},
+        '-LBL-RELEASES-': {'text': 'lbl_releases'},
+        '-LBL-ISSUES-': {'text': 'lbl_issues'},
+        '-FRM-ABOUT-NOTES-': {'text': 'frm_about_notes'},
+        '-ABOUT-NOTE-1-': {'text': 'about_note_1'},
+        '-ABOUT-NOTE-2-': {'text': 'about_note_2'},
     }
 
     tab_group = window['-TABGROUP-']
@@ -786,7 +817,7 @@ def update_popup(parent_window: sg.Window, version_info: dict[str, str], current
     new_version = version_info['version']
 
     popup_layout = [
-        [sg.Text(LANG.get('update_available_1', 'A new version of VideOCR ({}) is available!').format(new_version))],
+        [sg.Text(LANG.get('update_available_1', 'A new version of VideOCRplus ({}) is available!').format(new_version))],
         [sg.Text(LANG.get('update_available_2', 'You are currently using version {}.').format(current_version))],
         [sg.Text(LANG.get('update_available_3', 'Click the link below to visit the download page:'))],
         [sg.Text(url, font=("Arial", scale_font_size(11), 'underline'), enable_events=True, key='-UPDATE_LINK-')],
@@ -2324,13 +2355,13 @@ tab2_content = [
     [
         sg.Column([
             [sg.Frame("OCR Settings", key='-FRM-OCR-SETTINGS-', layout=[
-                [sg.Text("Frame Range", font=FONT_SECTION, text_color='#f4f7fb')],
+                [sg.Text("Frame Range", font=FONT_SECTION, text_color='#f4f7fb', key='-LBL-FRAME-RANGE-')],
                 [sg.Text("Start Time (e.g., 0:00 or 1:23:45):", size=(35, 1), key='-LBL-TIME_START-', text_color=COLOR_MUTED),
                  sg.Input(DEFAULT_TIME_START, key="--time_start", size=(15, 1), enable_events=True)],
                 [sg.Text("End Time (e.g., 0:10 or 2:34:56):", size=(35, 1), key='-LBL-TIME_END-', text_color=COLOR_MUTED),
                  sg.Input("", key="--time_end", size=(15, 1), enable_events=True)],
                 [sg.HorizontalSeparator()],
-                [sg.Text("OCR Filtering", font=FONT_SECTION, text_color='#f4f7fb')],
+                [sg.Text("OCR Filtering", font=FONT_SECTION, text_color='#f4f7fb', key='-LBL-OCR-FILTERING-')],
                 [sg.Text("Confidence Threshold (0-100):", size=(35, 1), key='-LBL-CONF_THRESHOLD-', text_color=COLOR_MUTED),
                  sg.Input(DEFAULT_CONF_THRESHOLD, key="--conf_threshold", size=(10, 1), enable_events=True)],
                 [sg.Text("Similarity Threshold (0-100):", size=(35, 1), key='-LBL-SIM_THRESHOLD-', text_color=COLOR_MUTED),
@@ -2351,7 +2382,7 @@ tab2_content = [
         ], pad=(0, 0), expand_x=True, vertical_alignment='top', background_color=sg.theme_background_color()),
         sg.Column([
             [sg.Frame("LLM Vision Settings", key='-FRM-LLM-SETTINGS-', layout=[
-                [sg.Text("External Vision OCR", font=FONT_SECTION, text_color='#f4f7fb'),
+                [sg.Text("External Vision OCR", font=FONT_SECTION, text_color='#f4f7fb', key='-LBL-EXTERNAL-VISION-OCR-'),
                  sg.Push(),
                  sg.Button("Test Connection", key="-BTN-LLM-TEST-", size=(15, 1), button_color=BUTTON_PRIMARY)],
                 [sg.Text("API Key:", size=(15, 1), key='-LBL-LLM_API_KEY-', text_color=COLOR_MUTED),
@@ -2365,7 +2396,7 @@ tab2_content = [
                 [sg.Checkbox("Disable Inference Mode (reasoning/thinking)", default=False, key="--llm_disable_inference", enable_events=True)],
                 [sg.Text("Image Quality (50-100):", size=(20, 1), key='-LBL-LLM_IMAGE_QUALITY-', text_color=COLOR_MUTED),
                  sg.Input("75", key="--llm_image_quality", size=(10, 1), enable_events=True)],
-                [sg.Text("Preset:", size=(15, 1), text_color=COLOR_MUTED),
+                [sg.Text("Preset:", size=(15, 1), text_color=COLOR_MUTED, key='-LBL-LLM-PRESET-'),
                  sg.Combo(["Custom"], default_value="Custom", key="-LLM_PRESET-", size=(20, 1), readonly=True, enable_events=True),
                  sg.Button("Save", key="-BTN-LLM-PRESET-SAVE-", size=(6, 1)),
                  sg.Button("Delete", key="-BTN-LLM-PRESET-DELETE-", size=(6, 1))],
@@ -2376,7 +2407,7 @@ tab2_content = [
     [
         sg.Column([
             [sg.Frame("Processing Options", key='-FRM-PROCESSING-OPTIONS-', layout=[
-                [sg.Text("Recognition Behavior", font=FONT_SECTION, text_color='#f4f7fb')],
+                [sg.Text("Recognition Behavior", font=FONT_SECTION, text_color='#f4f7fb', key='-LBL-RECOGNITION-BEHAVIOR-')],
                 [sg.Checkbox("Enable GPU Usage", default=True, key="--use_gpu", enable_events=True, size=(25, 1)),
                  sg.Checkbox("Use Full Frame OCR", default=False, key="--use_fullframe", enable_events=True, size=(25, 1))],
                 [sg.Checkbox("Enable Dual Zone OCR", default=False, key="--use_dual_zone", enable_events=True, size=(25, 1)),
@@ -2395,7 +2426,7 @@ tab2_content = [
         ], pad=(0, 0), expand_x=True, vertical_alignment='top', background_color=sg.theme_background_color()),
         sg.Column([
             [sg.Frame("Component Status", key='-FRM-COMPONENT-STATUS-', layout=[
-                [sg.Text("Plugin Components", font=FONT_SECTION, text_color='#f4f7fb'),
+                [sg.Text("Plugin Components", font=FONT_SECTION, text_color='#f4f7fb', key='-LBL-PLUGIN-COMPONENTS-'),
                  sg.Push(),
                  sg.Button("Refresh", key="-BTN-REFRESH-PLUGINS-", size=(8, 1))],
                 [sg.Text("Download source:", size=(18, 1), key='-LBL-DL_SOURCE-', text_color=COLOR_MUTED),
@@ -2413,7 +2444,7 @@ tab2_content = [
     [sg.Frame("Application Settings", key='-FRM-APP-SETTINGS-', layout=[
         [
             sg.Column([
-                [sg.Text("Application Preferences", font=FONT_SECTION, text_color='#f4f7fb'), VerticalStrut()],
+                [sg.Text("Application Preferences", font=FONT_SECTION, text_color='#f4f7fb', key='-LBL-APP-PREFERENCES-'), VerticalStrut()],
                 [sg.Text("UI Language:", size=(30, 1), key='-LBL-UI_LANG-', text_color=COLOR_MUTED), VerticalStrut()],
                 [sg.Text("GUI Scaling:", size=(30, 1), key='-LBL-GUI_SCALING-', text_color=COLOR_MUTED), VerticalStrut()],
                 [sg.Checkbox("Save Crop Box Selection", default=True, key="--save_crop_box", enable_events=True), VerticalStrut()],
@@ -2477,14 +2508,14 @@ tab3_layout = [
         ], expand_x=True, pad=(0, 10), background_color=COLOR_PANEL)],
         [
             sg.Frame("Engines", key='-FRM-ABOUT-ENGINES-', layout=[
-                [sg.Text("PaddleOCR", size=(14, 1), text_color=COLOR_ACCENT), sg.Text("Local detection and recognition", text_color=COLOR_MUTED)],
-                [sg.Text("Google Lens", size=(14, 1), text_color=COLOR_ACCENT), sg.Text("Optional cloud recognition via Chrome Lens CLI", text_color=COLOR_MUTED)],
-                [sg.Text("LLM Vision", size=(14, 1), text_color=COLOR_ACCENT), sg.Text("Vision model recognition with semantic deduplication", text_color=COLOR_MUTED)],
+                [sg.Text("PaddleOCR", size=(14, 1), text_color=COLOR_ACCENT), sg.Text("Local detection and recognition", text_color=COLOR_MUTED, key='-ABOUT-ENGINE-PADDLEOCR-')],
+                [sg.Text("Google Lens", size=(14, 1), text_color=COLOR_ACCENT), sg.Text("Optional cloud recognition via Chrome Lens CLI", text_color=COLOR_MUTED, key='-ABOUT-ENGINE-GOOGLE-LENS-')],
+                [sg.Text("LLM Vision", size=(14, 1), text_color=COLOR_ACCENT), sg.Text("Vision model recognition with semantic deduplication", text_color=COLOR_MUTED, key='-ABOUT-ENGINE-LLM-VISION-')],
             ], expand_x=True, pad=(0, 6), background_color=COLOR_PANEL),
             sg.Frame("Links", key='-FRM-ABOUT-LINKS-', layout=[
-                [sg.Text("Releases", size=(12, 1), text_color=COLOR_MUTED),
+                [sg.Text("Releases", size=(12, 1), text_color=COLOR_MUTED, key='-LBL-RELEASES-'),
                  sg.Text("https://github.com/kiriya55/VideOCRplus/releases", font=("Segoe UI", scale_font_size(9), 'underline'), text_color=COLOR_ACCENT, enable_events=True, key="-GITHUB_RELEASES_LINK-")],
-                [sg.Text("Issues", size=(12, 1), text_color=COLOR_MUTED),
+                [sg.Text("Issues", size=(12, 1), text_color=COLOR_MUTED, key='-LBL-ISSUES-'),
                  sg.Text("https://github.com/kiriya55/VideOCRplus/issues", font=("Segoe UI", scale_font_size(9), 'underline'), text_color=COLOR_ACCENT, enable_events=True, key="-GITHUB_ISSUES_LINK-")],
             ], expand_x=True, pad=(0, 6), background_color=COLOR_PANEL),
         ],
@@ -2576,7 +2607,7 @@ def stretch_scrollable_col(col_key: str) -> None:
 
 make_dpi_aware()
 
-window = sg.Window("VideOCR", layout, relative_location=(0, y_offset), icon=ICON_PATH, finalize=True, resizable=True)
+window = sg.Window("VideOCRplus", layout, relative_location=(0, y_offset), icon=ICON_PATH, finalize=True, resizable=True)
 
 # Resize vertical struts and resize window with new total height
 scaled_btn_height = window["-BTN-OPEN-FILE-"].Widget.winfo_reqheight()
@@ -3321,7 +3352,7 @@ while True:
         threading.Thread(target=check_for_updates, args=(window, True), daemon=True).start()
 
     elif event == '-NO_UPDATE_FOUND-':
-        custom_popup(window, LANG.get('update_title_uptodate', "Up to Date"), LANG.get('update_msg_uptodate', "You are running the latest version of VideOCR."), icon=ICON_PATH)
+        custom_popup(window, LANG.get('update_title_uptodate', "Up to Date"), LANG.get('update_msg_uptodate', "You are running the latest version of VideOCRplus."), icon=ICON_PATH)
 
     elif event == '-UPDATE_CHECK_FAILED-':
         custom_popup(window, LANG.get('update_title_error', "Error"), LANG.get('update_msg_error', "Failed to check for updates.\nPlease check your internet connection."), icon=ICON_PATH)
