@@ -1,7 +1,7 @@
 English | [中文](https://github.com/kiriya55/VideOCRplus/blob/main/README_ch.md)
 
 <p align="center">
-<img src="https://github.com/kiriya55/VideOCRplus/blob/master/Pictures/VideOCRplus.png" alt="VideOCRplus Icon" width="128">
+<img src="https://github.com/kiriya55/VideOCRplus/blob/main/Pictures/VideOCRplus.png" alt="VideOCRplus Icon" width="128">
   <h1 align="center">VideOCRplus</h1>
   <p align="center">
     Extract hardcoded subtitles from videos!
